@@ -1,0 +1,1385 @@
+# -*- coding: utf-8 -*-
+"""个人持仓 + 板块情绪看盘台。只做客观数据展示，非买卖建议。"""
+import os
+for v in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy"):
+    os.environ.pop(v, None)
+os.environ["NO_PROXY"]="*"; os.environ["no_proxy"]="*"
+
+import html
+import re
+import sqlite3
+import time
+from datetime import datetime, timedelta
+
+import akshare as ak
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from holding_import import (
+    ALIPAY_OTC_SCREENSHOT_SAMPLE_JSON,
+    EASTMONEY_SCREENSHOT_SAMPLE_JSON,
+    GALAXY_LOF_SCREENSHOT_SAMPLE_JSON,
+    SAMPLE_CSV,
+    SAMPLE_JSON,
+    VISION_PROMPT_ALIPAY_OTC,
+    VISION_PROMPT_EASTMONEY_A_STOCK,
+    VISION_PROMPT_GALAXY_LOF,
+    consolidate_same_code,
+    current_holdings,
+    diff_records,
+    display_records,
+    merge_records,
+    normalize_records,
+    parse_records,
+    write_holdings,
+)
+from my_holdings import load_holdings_data
+from project_paths import BOARD_HEAT_HISTORY_FILE, DB, SNAPSHOTS_FILE
+from term_help import RISK_TIP, render_glossary, render_term, risk_notice
+
+
+TODAY = datetime.now().strftime("%Y%m%d")
+HOLDINGS, BOARD_MAP = load_holdings_data()
+
+st.set_page_config(page_title="我的全资产管理台", layout="wide")
+st.markdown(
+    """
+    <style>
+    :root {
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --line: #e7edf5;
+        --text: #172033;
+        --muted: #697386;
+        --red: #d8342a;
+        --green: #159447;
+        --blue: #2563eb;
+        --amber: #b7791f;
+    }
+    .stApp { background: var(--bg); color: var(--text); }
+    .block-container { padding-top: 1.75rem; padding-bottom: 2.5rem; max-width: 980px; }
+    h1, h2, h3 { letter-spacing: 0; line-height: 1.25; }
+    h1 { padding-top: .15rem; margin-bottom: .85rem; }
+    div[data-testid="stMetric"],
+    .soft-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, .05);
+        padding: 14px 16px;
+    }
+    .metric-card {
+        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, .06);
+        padding: 14px 16px;
+        min-height: 96px;
+        margin-bottom: 10px;
+    }
+    .metric-label { color: var(--muted); font-size: 13px; margin-bottom: 7px; }
+    .metric-value { color: var(--text); font-size: 25px; line-height: 1.18; font-weight: 800; word-break: break-word; }
+    .metric-sub { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .pos { color: var(--red) !important; }
+    .neg { color: var(--green) !important; }
+    .flat { color: var(--muted) !important; }
+    .pill {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #eef4ff;
+        color: #2452b8;
+        font-size: 12px;
+        font-weight: 700;
+    }
+    .mini-row {
+        display: grid;
+        grid-template-columns: 1.35fr .75fr .75fr .75fr;
+        gap: 8px;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 14px;
+    }
+    .mini-head { color: var(--muted); font-weight: 700; }
+    .holding-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, .04);
+        padding: 13px 14px;
+        margin: 10px 0;
+    }
+    .holding-title { font-weight: 800; margin-bottom: 4px; }
+    .holding-meta { color: var(--muted); font-size: 13px; }
+    .kv-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+    }
+    .kv { background: #f8fafc; border-radius: 10px; padding: 8px; }
+    .kv-label { color: var(--muted); font-size: 12px; }
+    .kv-value { font-weight: 800; margin-top: 2px; }
+    div[data-testid="stDataFrame"] { font-size: 13px; }
+    @media (max-width: 760px) {
+        .block-container { padding-top: 2rem; padding-left: .72rem; padding-right: .72rem; }
+        .metric-card { min-height: 84px; padding: 12px; }
+        .metric-value { font-size: 21px; }
+        .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .mini-row { grid-template-columns: 1.25fr .65fr .65fr .75fr; gap: 6px; font-size: 13px; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+BOARD_ALIASES = {
+    "航天装备Ⅱ": "军工装备",
+    "军工电子Ⅱ": "军工电子",
+    "IT服务Ⅱ": "IT服务",
+    "油气开采Ⅱ": "油气开采及服务",
+    "城商行Ⅱ": "银行",
+    "股份制银行Ⅱ": "银行",
+    "国有大型银行Ⅱ": "银行",
+    "农商行Ⅱ": "银行",
+    "塑料": "塑料制品",
+    "综合Ⅱ": "综合",
+    "旅游及景区": "旅游及酒店",
+    "玻璃玻纤": "非金属材料",
+}
+
+PAGE_TERMS = {
+    "home": ["估算值", "情绪温度分", "高温板块持仓占比", "数据可信度"],
+    "holding": ["单一持仓集中度", "K线", "MACD", "RSI", "单位净值", "日增长率"],
+    "radar": ["板块温度", "情绪温度分", "低温升温", "高位过热", "高位降温", "当日低温", "强势延续", "中性观察", "数据可信度", "涨跌幅", "净流入", "上涨家数占比", "成交额", "趋势箭头"],
+    "mine": ["基金穿透", "板块占比", "资产暴露", "情绪温度分", "高温板块持仓占比", "低温板块持仓占比", "境外/非A股"],
+    "advanced": ["AI识别结果", "识别置信度", "人工确认", "自动备份", "差异预览", "接口失败", "重试次数", "数据可信度"],
+}
+
+IMPORT_TEMPLATES = {
+    "东方财富A股持仓截图": {
+        "account": "东方财富",
+        "type": "stock",
+        "sample": EASTMONEY_SCREENSHOT_SAMPLE_JSON,
+        "prompt": VISION_PROMPT_EASTMONEY_A_STOCK,
+        "note": "只更新东方财富 A 股个股，不影响银河、支付宝或场内基金。",
+    },
+    "银河场内基金持仓截图": {
+        "account": "银河证券",
+        "type": "lof",
+        "sample": GALAXY_LOF_SCREENSHOT_SAMPLE_JSON,
+        "prompt": VISION_PROMPT_GALAXY_LOF,
+        "note": "只更新银河证券场内基金/LOF。同一代码多行会先合并或去重，并提示核对。",
+    },
+    "支付宝场外基金持仓截图": {
+        "account": "支付宝",
+        "type": "otc",
+        "sample": ALIPAY_OTC_SCREENSHOT_SAMPLE_JSON,
+        "prompt": VISION_PROMPT_ALIPAY_OTC,
+        "note": "只更新支付宝场外基金。截图缺少单只基金市值时，会沿用当前配置里的市值。",
+    },
+}
+
+
+def to_num(x):
+    if isinstance(x, (int, float)):
+        return float(x)
+    s = str(x).replace(",", "").replace("%", "").strip()
+    if s in ("", "-", "nan", "None"):
+        return float("nan")
+    m = 1
+    if s.endswith("亿"):
+        m = 1e8
+        s = s[:-1]
+    elif s.endswith("万"):
+        m = 1e4
+        s = s[:-1]
+    try:
+        return float(s) * m
+    except Exception:
+        return float("nan")
+
+
+def fmt_money(v):
+    try:
+        return f"{float(v):,.0f} 元"
+    except Exception:
+        return "—"
+
+
+def fmt_price(v):
+    try:
+        return f"{float(v):.3f}"
+    except Exception:
+        return "—"
+
+
+def fmt_pct(v):
+    try:
+        return f"{float(v):.1f}%"
+    except Exception:
+        return "—"
+
+
+def cls(v):
+    try:
+        n = float(v)
+    except Exception:
+        return "flat"
+    if n > 0:
+        return "pos"
+    if n < 0:
+        return "neg"
+    return "flat"
+
+
+def esc(x):
+    return html.escape(str(x))
+
+
+def value_html(v, suffix="", signed=False):
+    try:
+        n = float(v)
+        text = f"{n:+,.0f}{suffix}" if signed else f"{n:,.0f}{suffix}"
+        return f'<span class="{cls(n)}">{esc(text)}</span>'
+    except Exception:
+        return esc(v)
+
+
+def card(label, value, sub="", tone="flat"):
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{esc(label)}</div>
+            <div class="metric-value {tone}">{value}</div>
+            <div class="metric-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def mini_table(rows):
+    if not rows:
+        st.caption("暂无数据。")
+        return
+    st.markdown(
+        '<div class="soft-card">'
+        '<div class="mini-row mini-head"><div>名称</div><div>温度</div><div>变化</div><div>状态</div></div>',
+        unsafe_allow_html=True,
+    )
+    for r in rows:
+        score = "—" if pd.isna(r.get("情绪温度分")) else f"{float(r.get('情绪温度分')):.0f}"
+        delta = "—" if pd.isna(r.get("温度变化")) else f"{float(r.get('温度变化')):+.1f}"
+        st.markdown(
+            f"""
+            <div class="mini-row">
+                <div><b>{esc(r.get('板块', ''))}</b></div>
+                <div>{esc(score)}</div>
+                <div class="{cls(r.get('温度变化'))}">{esc(delta)}</div>
+                <div>{esc(r.get('情绪标签', ''))}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def metric_with_help(col, label, value, delta=None, term=None):
+    with col:
+        st.metric(label, value, delta)
+        if term:
+            render_term(st, term)
+
+
+def render_performance_curve(history, scope="total"):
+    if history is None or len(history) < 2:
+        st.info("数据积累中，明日起逐步生成曲线。曲线从系统开始记录之日起，历史无法补全。")
+        return
+    prefix_map = {
+        "total": ("总资产", "total_return_pct", "total_profit"),
+        "galaxy": ("银河证券", "galaxy_return_pct", "galaxy_profit"),
+        "eastmoney": ("东方财富", "eastmoney_return_pct", "eastmoney_profit"),
+        "alipay": ("支付宝", "alipay_return_pct", "alipay_profit"),
+    }
+    label, return_col, profit_col = prefix_map[scope]
+    missing = [c for c in ("date", return_col, profit_col, "hs300_close") if c not in history.columns]
+    if missing:
+        st.info("历史文件字段不完整，暂时无法生成收益曲线。")
+        return
+
+    mode = st.segmented_control(
+        "曲线类型",
+        ["收益率曲线", "收益金额曲线"],
+        default="收益率曲线",
+        key=f"curve_mode_{scope}",
+        label_visibility="collapsed",
+    )
+    dfh = history.dropna(subset=["date"]).copy()
+    if len(dfh) < 2:
+        st.info("数据积累中，明日起逐步生成曲线。曲线从系统开始记录之日起，历史无法补全。")
+        return
+
+    fig = go.Figure()
+    if mode == "收益金额曲线":
+        fig.add_trace(go.Scatter(x=dfh["date"], y=pd.to_numeric(dfh[profit_col], errors="coerce"), name=f"{label}收益金额", mode="lines+markers"))
+        fig.update_yaxes(title="收益金额（元）")
+        st.caption("收益金额曲线从系统开始记录之日起展示，历史无法补全。")
+    else:
+        returns_raw = pd.to_numeric(dfh[return_col], errors="coerce")
+        base_return = returns_raw.dropna().iloc[0] if returns_raw.notna().any() else 0
+        returns = returns_raw - base_return
+        hs300 = pd.to_numeric(dfh["hs300_close"], errors="coerce")
+        base = hs300.dropna().iloc[0] if hs300.notna().any() else None
+        hs300_ret = (hs300 / base - 1) * 100 if base else pd.Series([float("nan")] * len(dfh))
+        fig.add_trace(go.Scatter(x=dfh["date"], y=returns, name=f"{label}收益率", mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=dfh["date"], y=hs300_ret, name="沪深300基准", mode="lines+markers"))
+        last_port = returns.dropna().iloc[-1] if returns.notna().any() else float("nan")
+        last_idx = hs300_ret.dropna().iloc[-1] if hs300_ret.notna().any() else float("nan")
+        if pd.notna(last_port) and pd.notna(last_idx):
+            diff = last_port - last_idx
+            st.caption(f"从记录日起，{label}相对沪深300：{'跑赢' if diff >= 0 else '跑输'} {abs(diff):.1f}%。收益率曲线按第一条记录归零，历史无法补全。")
+        fig.update_yaxes(title="收益率（%）")
+    fig.update_layout(height=280, margin=dict(l=10, r=10, t=20, b=10), legend=dict(orientation="h"))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def sina_stock(code):
+    return ("sh" if code.startswith("6") else "sz") + code
+
+
+def sina_fund(code):
+    return ("sh" if code.startswith(("5", "6")) else "sz") + code
+
+
+def normalize_board_name(board):
+    board = str(board or "").strip()
+    if not board:
+        return board
+    return BOARD_ALIASES.get(board, board.replace("Ⅱ", ""))
+
+
+def valid_board_name(x):
+    s = str(x or "").strip()
+    return s not in ("", "None", "nan") and not s.startswith("无")
+
+
+@st.cache_data(ttl=600)
+def load_snapshot_history():
+    if not SNAPSHOTS_FILE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(SNAPSHOTS_FILE)
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def price_hist(code, is_fund):
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
+    df = None
+    last = None
+    for i in range(4):
+        try:
+            if is_fund:
+                df = ak.fund_etf_hist_sina(symbol=sina_fund(code))
+            else:
+                df = ak.stock_zh_a_daily(symbol=sina_stock(code), start_date=start, end_date=end, adjust="qfq")
+            if df is not None and len(df) > 20:
+                break
+        except Exception as e:
+            last = e
+            time.sleep(2)
+    if df is None or len(df) == 0:
+        raise RuntimeError(f"数据源暂时拉不到：{last}")
+    df = df.rename(columns={c: c.lower() for c in df.columns})
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").drop_duplicates("date")
+    df = df.dropna(subset=["close"]).reset_index(drop=True)
+    df = df[df["close"] > 0].reset_index(drop=True)
+    c = df["close"]
+    df["MA5"] = c.rolling(5).mean()
+    df["MA10"] = c.rolling(10).mean()
+    df["MA20"] = c.rolling(20).mean()
+    df["MA60"] = c.rolling(60).mean()
+    e12 = c.ewm(span=12, adjust=False).mean()
+    e26 = c.ewm(span=26, adjust=False).mean()
+    df["DIF"] = e12 - e26
+    df["DEA"] = df["DIF"].ewm(span=9, adjust=False).mean()
+    df["MACD动能"] = 2 * (df["DIF"] - df["DEA"])
+    d = c.diff()
+    g = d.clip(lower=0).rolling(14).mean()
+    l = (-d.clip(upper=0)).rolling(14).mean()
+    df["RSI"] = 100 - 100 / (1 + g / l.replace(0, 1e-9))
+    return df
+
+
+@st.cache_data(ttl=600)
+def otc_nav(code):
+    for i in range(3):
+        try:
+            return ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        except Exception:
+            time.sleep(2)
+    return None
+
+
+@st.cache_data(ttl=600)
+def boards_live():
+    for i in range(4):
+        try:
+            df = ak.stock_board_industry_summary_ths()
+            if df is not None and len(df):
+                return df, "同花顺实时接口", False
+        except Exception:
+            time.sleep(2)
+    try:
+        conn = sqlite3.connect(DB)
+        latest = conn.execute("SELECT MAX(snapshot_date) FROM board_heat").fetchone()[0]
+        df = pd.read_sql("SELECT * FROM board_heat WHERE snapshot_date=?", conn, params=(latest,))
+        conn.close()
+        if len(df):
+            return df, f"本地历史快照 {latest}", True
+    except Exception:
+        pass
+    raise RuntimeError("同花顺板块行情暂时拉不到，本地也没有历史快照")
+
+
+@st.cache_data(ttl=600)
+def load_board_history():
+    if BOARD_HEAT_HISTORY_FILE.exists():
+        try:
+            return pd.read_csv(BOARD_HEAT_HISTORY_FILE, dtype={"snapshot_date": str})
+        except Exception:
+            pass
+    try:
+        conn = sqlite3.connect(DB)
+        df = pd.read_sql("SELECT * FROM board_heat", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def load_update_log():
+    try:
+        conn = sqlite3.connect(DB)
+        df = pd.read_sql("SELECT * FROM update_log ORDER BY id DESC LIMIT 200", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def load_fund_board_map():
+    try:
+        conn = sqlite3.connect(DB)
+        mp = pd.read_sql("SELECT code, main_board, detail FROM fund_board_map", conn)
+        conn.close()
+    except Exception:
+        return {}
+    out = {}
+    for _, r in mp.iterrows():
+        out[str(r["code"])] = {
+            "main_board": str(r.get("main_board", "") or ""),
+            "detail": str(r.get("detail", "") or ""),
+        }
+    return out
+
+
+def score_snapshot(df):
+    df = df.copy()
+    for col in ["涨跌幅", "净流入", "总成交额", "上涨家数", "下跌家数"]:
+        if col in df.columns:
+            df[col] = df[col].map(to_num)
+        else:
+            df[col] = pd.NA
+    denom = (df["上涨家数"] + df["下跌家数"]).replace(0, pd.NA)
+    df["上涨家数占比"] = df["上涨家数"] / denom
+
+    def rank_score(series, max_score):
+        return (series.rank(pct=True) * max_score).round(1)
+
+    df["涨跌幅得分"] = rank_score(df["涨跌幅"], 25)
+    df["净流入得分"] = rank_score(df["净流入"], 25)
+    df["上涨家数占比得分"] = rank_score(df["上涨家数占比"], 20)
+    df["成交额得分"] = rank_score(df["总成交额"], 15)
+    df["基础温度分"] = df[["涨跌幅得分", "净流入得分", "上涨家数占比得分", "成交额得分"]].sum(axis=1, min_count=2)
+    return df
+
+
+def score_boards(df, history=None):
+    df = score_snapshot(df)
+    prev_map = {}
+    current_date = ""
+    if "snapshot_date" in df.columns and df["snapshot_date"].notna().any():
+        current_date = str(df["snapshot_date"].dropna().max())
+
+    if history is not None and len(history) and "snapshot_date" in history.columns:
+        dates = sorted([str(x) for x in history["snapshot_date"].dropna().unique()])
+        prev_dates = [d for d in dates if d != current_date]
+        if prev_dates:
+            prev_date = prev_dates[-1]
+            prev = score_snapshot(history[history["snapshot_date"].astype(str) == prev_date])
+            prev_map = dict(zip(prev["板块"], prev["基础温度分"]))
+
+    df["上一期基础温度分"] = df["板块"].map(prev_map)
+    df["温度变化"] = df["基础温度分"] - df["上一期基础温度分"]
+    df["历史趋势得分"] = (7.5 + df["温度变化"].fillna(0) * 0.5).clip(0, 15).round(1)
+    df["情绪温度分"] = (df["基础温度分"] + df["历史趋势得分"]).round(0)
+
+    score_cols = ["涨跌幅得分", "净流入得分", "上涨家数占比得分", "成交额得分"]
+    df["可用字段数"] = df[score_cols].notna().sum(axis=1)
+    df["数据可信度"] = df.apply(credibility_label, axis=1)
+    df["趋势箭头"] = df["温度变化"].map(trend_label)
+    df["情绪标签"] = df.apply(emotion_label, axis=1)
+    return df
+
+
+def credibility_label(row):
+    usable = int(row.get("可用字段数", 0) or 0)
+    has_history = pd.notna(row.get("上一期基础温度分"))
+    if usable >= 4 and has_history:
+        return "高"
+    if usable >= 4:
+        return "中"
+    if usable >= 2:
+        return "低"
+    return "数据不足"
+
+
+def trend_label(delta):
+    if pd.isna(delta):
+        return "历史不足"
+    if delta >= 5:
+        return "↑ 升温"
+    if delta <= -5:
+        return "↓ 降温"
+    return "→ 平稳"
+
+
+def emotion_label(row):
+    cred = row.get("数据可信度", "数据不足")
+    score = row.get("情绪温度分")
+    delta = row.get("温度变化")
+    if cred == "数据不足" or pd.isna(score):
+        return "数据不足"
+    delta = 0 if pd.isna(delta) else float(delta)
+    score = float(score)
+    if score <= 35 and delta <= 3:
+        return "当日低温"
+    if score <= 58 and delta >= 5:
+        return "低温升温"
+    if score >= 80 and delta <= -5:
+        return "高位降温"
+    if score >= 82:
+        return "高位过热"
+    if score >= 65 and delta >= -3:
+        return "强势延续"
+    return "中性观察"
+
+
+def recent_sentiment_label(avg_score, delta):
+    if pd.isna(avg_score):
+        return "历史不足"
+    delta = 0 if pd.isna(delta) else float(delta)
+    avg_score = float(avg_score)
+    if avg_score >= 75 and delta <= -5:
+        return "高位降温"
+    if avg_score >= 75:
+        return "近期拥挤偏热"
+    if avg_score >= 60 and delta >= 5:
+        return "持续升温"
+    if avg_score >= 60:
+        return "中高温观察"
+    if avg_score <= 35 and delta >= 5:
+        return "低温回暖"
+    if avg_score <= 35:
+        return "长期低温"
+    return "中性观察"
+
+
+def build_recent_sentiment(history, min_days=3, window=5):
+    if history is None or len(history) == 0 or "snapshot_date" not in history.columns:
+        return {}, "历史不足：还没有本地板块快照。"
+    dates = sorted([str(x) for x in history["snapshot_date"].dropna().unique()])
+    if len(dates) < min_days:
+        return {}, f"历史不足：当前只有 {len(dates)} 个交易日快照，至少需要 {min_days} 个交易日。"
+
+    scored = []
+    for d in dates[-window:]:
+        one = score_snapshot(history[history["snapshot_date"].astype(str) == d]).copy()
+        one["snapshot_date"] = d
+        scored.append(one[["板块", "snapshot_date", "基础温度分"]])
+    all_scores = pd.concat(scored, ignore_index=True)
+    out = {}
+    for board, g in all_scores.groupby("板块"):
+        g = g.sort_values("snapshot_date")
+        avg_score = float(g["基础温度分"].mean())
+        delta = float(g["基础温度分"].iloc[-1] - g["基础温度分"].iloc[0]) if len(g) >= 2 else 0.0
+        out[str(board)] = {
+            "近期温度": avg_score,
+            "近期变化": delta,
+            "近期情绪": recent_sentiment_label(avg_score, delta),
+            "样本天数": len(g),
+        }
+    return out, f"基于最近 {min(window, len(dates))} 个交易日板块快照。"
+
+
+def resolve_holding_board(r, fund_map):
+    base_tag, base_board = BOARD_MAP.get(r["code"], (r["name"], "None"))
+    note = ""
+    if r["type"] in ("otc", "lof") and r["code"] in fund_map:
+        fm = fund_map[r["code"]]
+        mb = normalize_board_name(fm["main_board"])
+        detail = fm["detail"].strip()
+        if valid_board_name(mb):
+            note = f"{r['name']}：基金穿透主导板块={mb}。{detail}"
+            return mb, mb, note
+        note = f"{r['name']}：基金穿透显示为境外/非A股或无A股主导板块。{detail}"
+        if valid_board_name(base_board):
+            return base_tag, base_board, note
+        return base_tag, "None", note
+    return base_tag, base_board, note
+
+
+@st.cache_data(ttl=600)
+def compute():
+    rows = []
+    for h in HOLDINGS:
+        r = dict(h)
+        try:
+            if h["type"] == "otc":
+                r["市值"] = h["market_value"]
+                r["盈亏"] = h["profit"]
+                r["成本额"] = h["market_value"] - h["profit"]
+                r["今日估算盈亏"] = 0.0
+                r["现价"] = float("nan")
+                r["数据日期"] = ""
+            else:
+                hist = price_hist(h["code"], h["type"] == "lof")
+                p = float(hist.iloc[-1]["close"])
+                prev = float(hist.iloc[-2]["close"]) if len(hist) > 1 else p
+                r["现价"] = p
+                r["市值"] = p * h["shares"]
+                r["成本额"] = h["cost"] * h["shares"]
+                r["盈亏"] = r["市值"] - r["成本额"]
+                r["今日估算盈亏"] = (p - prev) * h["shares"]
+                r["数据日期"] = str(hist.iloc[-1]["date"].date())
+            r["盈亏率"] = r["盈亏"] / r["成本额"] * 100 if r["成本额"] else 0
+        except Exception as e:
+            r["现价"] = float("nan")
+            r["市值"] = 0
+            r["盈亏"] = 0
+            r["成本额"] = 0
+            r["盈亏率"] = 0
+            r["今日估算盈亏"] = 0
+            r["数据日期"] = ""
+            r["错误"] = str(e)[:80]
+        rows.append(r)
+    cols = [
+        "account", "type", "name", "code", "cost", "shares", "market_value", "profit",
+        "现价", "市值", "盈亏", "成本额", "盈亏率", "今日估算盈亏", "数据日期", "错误",
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def build_exposure(df, fund_map, live, recent_sentiment=None):
+    recent_sentiment = recent_sentiment or {}
+    total_mv = df["市值"].sum()
+    agg = {}
+    for _, r in df.iterrows():
+        tag, temp_board, note = resolve_holding_board(r, fund_map)
+        if tag not in agg:
+            agg[tag] = {"板块": tag, "温度板块": temp_board, "持仓市值": 0.0, "明细": [], "说明": []}
+        agg[tag]["持仓市值"] += float(r["市值"])
+        agg[tag]["明细"].append(r["name"])
+        if note:
+            agg[tag]["说明"].append(note)
+
+    rows = []
+    for info in agg.values():
+        tb = info["温度板块"]
+        row = live[live["板块"] == tb] if live is not None and tb != "None" else pd.DataFrame()
+        score = float(row.iloc[0]["情绪温度分"]) if len(row) else float("nan")
+        label = str(row.iloc[0]["情绪标签"]) if len(row) else ("境外/非A股" if tb == "None" else "数据不足")
+        cred = str(row.iloc[0]["数据可信度"]) if len(row) else ("数据不足" if tb != "None" else "不适用")
+        trend = str(row.iloc[0]["趋势箭头"]) if len(row) else "—"
+        recent = recent_sentiment.get(tb, {})
+        rows.append({
+            "板块": info["板块"],
+            "温度板块": tb,
+            "持仓市值": info["持仓市值"],
+            "占总资产比例": info["持仓市值"] / total_mv * 100 if total_mv else 0,
+            "温度分": score,
+            "情绪标签": label,
+            "数据可信度": cred,
+            "趋势": trend,
+            "近期温度": recent.get("近期温度", float("nan")),
+            "近期变化": recent.get("近期变化", float("nan")),
+            "近期情绪": recent.get("近期情绪", "境外/非A股" if tb == "None" else "历史不足"),
+            "近期样本": recent.get("样本天数", 0),
+            "明细": "、".join(info["明细"]),
+            "说明": "；".join(info["说明"]),
+        })
+    out = pd.DataFrame(rows)
+    if len(out):
+        out = out.sort_values("持仓市值", ascending=False).reset_index(drop=True)
+    return out
+
+
+def kline(df):
+    d = df.tail(120).copy()
+    x = list(range(len(d)))
+    step = max(1, len(d) // 8)
+    ti = list(range(0, len(d), step))
+    tt = [d["date"].dt.strftime("%y-%m-%d").iloc[i] for i in ti]
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[.6, .2, .2],
+        vertical_spacing=.05,
+        subplot_titles=("K线 + MA", "MACD", "RSI"),
+    )
+    fig.add_trace(go.Candlestick(x=x, open=d["open"], high=d["high"], low=d["low"], close=d["close"], name="K线"), 1, 1)
+    for ma in ["MA5", "MA10", "MA20"]:
+        fig.add_trace(go.Scatter(x=x, y=d[ma], name=ma, mode="lines"), 1, 1)
+    fig.add_trace(go.Bar(x=x, y=d["MACD动能"], name="MACD动能"), 2, 1)
+    fig.add_trace(go.Scatter(x=x, y=d["DIF"], name="DIF"), 2, 1)
+    fig.add_trace(go.Scatter(x=x, y=d["DEA"], name="DEA"), 2, 1)
+    fig.add_trace(go.Scatter(x=x, y=d["RSI"], name="RSI"), 3, 1)
+    fig.add_hline(y=70, line_dash="dot", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dot", row=3, col=1)
+    fig.update_xaxes(tickmode="array", tickvals=ti, ticktext=tt, rangeslider_visible=False)
+    fig.update_layout(height=520, margin=dict(l=10, r=10, t=45, b=10), legend=dict(orientation="h"))
+    return fig
+
+
+def score_breakdown(row):
+    return pd.DataFrame([
+        {"维度": "涨跌幅", "得分": f"{row.get('涨跌幅得分', 0):.1f}/25"},
+        {"维度": "净流入", "得分": f"{row.get('净流入得分', 0):.1f}/25"},
+        {"维度": "上涨家数占比", "得分": f"{row.get('上涨家数占比得分', 0):.1f}/20"},
+        {"维度": "成交额", "得分": f"{row.get('成交额得分', 0):.1f}/15"},
+        {"维度": "历史趋势", "得分": f"{row.get('历史趋势得分', 0):.1f}/15"},
+        {"维度": "总分", "得分": f"{row.get('情绪温度分', 0):.0f}/100"},
+    ])
+
+
+def board_trend_table(rows):
+    if rows is None or len(rows) == 0:
+        return []
+    return rows.to_dict("records")
+
+
+def extract_weight_text(detail):
+    m = re.search(r"A股匹配权重\s*([0-9.]+%)", str(detail or ""))
+    return m.group(1) if m else "—"
+
+
+def health_summary(df, board_source, using_old):
+    log = load_update_log()
+    latest_log_time = log["update_time"].max() if len(log) and "update_time" in log.columns else ""
+    try:
+        conn = sqlite3.connect(DB)
+        board_date = conn.execute("SELECT MAX(snapshot_date) FROM board_heat").fetchone()[0] or ""
+        conn.close()
+    except Exception:
+        board_date = ""
+    stock_dates = df[df["type"] == "stock"]["数据日期"].dropna().astype(str)
+    lof_dates = df[df["type"] == "lof"]["数据日期"].dropna().astype(str)
+    otc_dates = df[df["type"] == "otc"]["数据日期"].dropna().astype(str)
+    today_logs = log[log["update_time"].astype(str).str.startswith(datetime.now().strftime("%Y-%m-%d"))] if len(log) else pd.DataFrame()
+    failed = today_logs[today_logs["status"] != "成功"] if len(today_logs) else pd.DataFrame()
+    success = today_logs[today_logs["status"] == "成功"] if len(today_logs) else pd.DataFrame()
+    if len(today_logs) == 0:
+        update_status = "无今日日志"
+    elif len(failed) == 0:
+        update_status = "成功"
+    elif len(success):
+        update_status = "部分成功"
+    else:
+        update_status = "失败"
+
+    return pd.DataFrame([
+        {"项目": "今日是否交易日", "内容": "是（未校验节假日）" if datetime.now().weekday() < 5 else "否（周末）"},
+        {"项目": "最新更新时间", "内容": latest_log_time or f"页面刷新 {datetime.now():%Y-%m-%d %H:%M:%S}"},
+        {"项目": "板块情绪数据日期", "内容": board_date or "无"},
+        {"项目": "A股行情数据日期", "内容": stock_dates.max() if len(stock_dates) else "无"},
+        {"项目": "场内基金行情数据日期", "内容": lof_dates.max() if len(lof_dates) else "无"},
+        {"项目": "场外基金净值日期", "内容": otc_dates.max() if len(otc_dates) else "无"},
+        {"项目": "update_data.py 是否成功", "内容": update_status},
+        {"项目": "失败接口", "内容": "、".join(failed["task_name"].astype(str).unique()) if len(failed) else "无"},
+        {"项目": "重试次数", "内容": str(int(today_logs["retry_count"].fillna(0).sum())) if len(today_logs) and "retry_count" in today_logs.columns else "0"},
+        {"项目": "错误原因", "内容": "；".join(failed["error_msg"].dropna().astype(str).head(3)) if len(failed) else "无"},
+        {"项目": "板块数据来源", "内容": board_source},
+        {"项目": "当前页面是否使用旧数据", "内容": "是" if using_old else "否"},
+    ])
+
+
+def daily_recap(exposure, total_mv):
+    if exposure is None or len(exposure) == 0:
+        return "当前没有足够数据生成复盘。以上内容仅为客观数据描述，不构成买卖建议。"
+    top = exposure.iloc[0]
+    hot = exposure.dropna(subset=["近期温度"]).sort_values("近期温度", ascending=False).head(1)
+    lines = [f"你的持仓主要集中在 {top['板块']}，占总资产约 {top['占总资产比例']:.1f}%。"]
+    if len(hot):
+        h = hot.iloc[0]
+        lines.append(f"{h['板块']} 近期温度约 {h['近期温度']:.0f}，状态为“{h['近期情绪']}”。")
+        if h["占总资产比例"] >= 20 and h["近期温度"] >= 75:
+            lines.append(f"{h['板块']} 属于“高仓位 + 近期高热度”组合，需要关注波动和回撤风险。")
+    foreign = exposure[exposure["情绪标签"] == "境外/非A股"]
+    if len(foreign):
+        lines.append("部分港美或全球基金无法直接用 A 股板块温度衡量，应单独观察其市场和汇率风险。")
+    lines.append(RISK_TIP)
+    return "\n\n".join(lines)
+
+
+def holding_card(r, with_chart=False, otc=False):
+    pnl = float(r.get("盈亏", 0))
+    pnl_rate = float(r.get("盈亏率", 0))
+    st.markdown(
+        f"""
+        <div class="holding-card">
+            <div class="holding-title">{esc(r.get('name', ''))}</div>
+            <div class="holding-meta">{esc(r.get('code', ''))} ｜ {esc(r.get('数据日期', '') or '净值/行情日期待更新')}</div>
+            <div class="kv-grid">
+                <div class="kv"><div class="kv-label">现价/净值</div><div class="kv-value">{fmt_price(r.get('现价')) if not otc else '—'}</div></div>
+                <div class="kv"><div class="kv-label">市值</div><div class="kv-value">{fmt_money(r.get('市值'))}</div></div>
+                <div class="kv"><div class="kv-label">盈亏</div><div class="kv-value {cls(pnl)}">{pnl:+,.0f} 元</div></div>
+                <div class="kv"><div class="kv-label">盈亏率</div><div class="kv-value {cls(pnl_rate)}">{pnl_rate:+.1f}%</div></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if otc:
+        nav = otc_nav(r["code"])
+        if nav is not None and len(nav):
+            nav = nav.copy()
+            nav.columns = ["日期", "单位净值", "日增长率"][:len(nav.columns)]
+            nav["日期"] = pd.to_datetime(nav["日期"])
+            nav = nav.tail(250)
+            fig = go.Figure(go.Scatter(x=nav["日期"], y=pd.to_numeric(nav["单位净值"], errors="coerce"), line=dict(color="#2563eb")))
+            fig.update_layout(height=260, title="单位净值走势", margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+    elif with_chart:
+        with st.expander("K线 / MA / MACD / RSI", expanded=False):
+            try:
+                st.plotly_chart(kline(price_hist(r["code"], r["type"] == "lof")), use_container_width=True)
+            except Exception as e:
+                st.error(f"K线拉取失败：{e}")
+
+
+def holding_import_widget(template_name, key_prefix):
+    cfg = IMPORT_TEMPLATES[template_name]
+    st.info(cfg["note"])
+    st.caption(f"本入口只接受：{cfg['account']} + {cfg['type']}。识别结果混入其他账户或类型时会被拦截。")
+
+    uploaded = st.file_uploader(
+        f"上传{template_name}（只预览，不自动写入）",
+        type=["png", "jpg", "jpeg"],
+        key=f"{key_prefix}_upload",
+    )
+    if uploaded is not None:
+        st.image(uploaded, caption="已上传截图。当前未接视觉 API，请粘贴识别草稿后预览。")
+
+    with st.expander("视觉模型提示词", expanded=False):
+        st.code(cfg["prompt"], language="text")
+
+    raw_key = f"{key_prefix}_raw_text"
+    proposed_key = f"{key_prefix}_proposed"
+    notes_key = f"{key_prefix}_duplicate_notes"
+    st.session_state.setdefault(raw_key, "")
+    st.session_state.setdefault(proposed_key, None)
+    st.session_state.setdefault(notes_key, [])
+
+    if st.button(f"载入{template_name}示例", key=f"{key_prefix}_load_sample"):
+        st.session_state[raw_key] = cfg["sample"]
+        st.session_state[proposed_key] = None
+        st.session_state[notes_key] = []
+
+    raw = st.text_area("粘贴识别结果（JSON 或 CSV）", height=180, key=raw_key)
+    if st.button("解析并预览", type="primary", key=f"{key_prefix}_parse"):
+        try:
+            parsed = parse_records(raw)
+            proposed, errors = normalize_records(parsed)
+            proposed, duplicate_notes = consolidate_same_code(proposed)
+            wrong_scope = [r for r in proposed if r.get("account") != cfg["account"] or r.get("type") != cfg["type"]]
+            if errors:
+                st.session_state[proposed_key] = None
+                st.session_state[notes_key] = []
+                st.error("有记录未通过校验，请先修正。")
+                st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
+            elif wrong_scope:
+                st.session_state[proposed_key] = None
+                st.session_state[notes_key] = []
+                st.error(f"识别结果混入了非本页账户/类型。本页只允许：{cfg['account']} + {cfg['type']}。")
+                st.dataframe(pd.DataFrame(display_records(wrong_scope)), use_container_width=True, hide_index=True)
+            elif not proposed:
+                st.session_state[proposed_key] = None
+                st.session_state[notes_key] = []
+                st.warning("没有解析到持仓记录。")
+            else:
+                st.session_state[proposed_key] = proposed
+                st.session_state[notes_key] = duplicate_notes
+                st.success(f"已解析 {len(proposed)} 条，请核对后再写入。")
+        except Exception as e:
+            st.session_state[proposed_key] = None
+            st.session_state[notes_key] = []
+            st.error(f"解析失败：{e}")
+
+    proposed = st.session_state.get(proposed_key)
+    if proposed:
+        duplicate_notes = st.session_state.get(notes_key, [])
+        current = current_holdings()
+        final_records = merge_records(current, proposed, "replace_same_account_type")
+        if duplicate_notes:
+            st.warning("同一代码多行处理结果如下，请重点核对。")
+            st.dataframe(pd.DataFrame(duplicate_notes), use_container_width=True, hide_index=True)
+        st.subheader("差异预览")
+        st.dataframe(pd.DataFrame(diff_records(current, final_records)), use_container_width=True, hide_index=True)
+        st.subheader("识别结果预览")
+        st.dataframe(pd.DataFrame(display_records(proposed)), use_container_width=True, hide_index=True)
+        checked = st.checkbox("我已核对代码、数量、成本、市值和收益。", key=f"{key_prefix}_checked")
+        phrase = st.text_input("请输入：确认写入", key=f"{key_prefix}_phrase")
+        if st.button("备份旧文件并写入 holdings_data.json", disabled=not (checked and phrase == "确认写入"), key=f"{key_prefix}_write"):
+            try:
+                backup = write_holdings(final_records)
+                msg = f"已写入 holdings_data.json。"
+                if backup:
+                    msg += f" 旧文件已备份到：{backup}"
+                st.success(msg)
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"写入失败：{e}")
+
+
+TYPE_LABELS = {
+    "stock": "A股个股",
+    "lof": "场内基金/LOF",
+    "otc": "场外基金",
+}
+LABEL_TYPES = {v: k for k, v in TYPE_LABELS.items()}
+
+
+def clean_managed_record(raw):
+    item = {
+        "account": raw["account"],
+        "type": raw["type"],
+        "name": str(raw.get("name", "")).strip(),
+        "code": str(raw.get("code", "")).strip(),
+    }
+    if not item["name"]:
+        raise ValueError("名称不能为空")
+    if not item["code"]:
+        raise ValueError("代码不能为空")
+    if item["type"] in {"stock", "lof"}:
+        item["cost"] = float(raw.get("cost") or 0)
+        item["shares"] = float(raw.get("shares") or 0)
+    else:
+        item["market_value"] = float(raw.get("market_value") or 0)
+        item["profit"] = float(raw.get("profit") or 0)
+    return item
+
+
+def save_managed_holdings(records):
+    backup = write_holdings(records, BOARD_MAP)
+    st.cache_data.clear()
+    return backup
+
+
+def render_holding_manager():
+    st.subheader("持仓管理")
+    st.caption("这里会直接写入 holdings_data.json，并在保存前自动备份上一版。")
+    records = current_holdings()
+    accounts = ["银河证券", "东方财富", "支付宝"]
+    for acc in accounts:
+        st.markdown(f"### {acc}")
+        account_rows = [(i, r) for i, r in enumerate(records) if r.get("account") == acc]
+        if not account_rows:
+            st.caption("这个账户暂时没有持仓。")
+        for idx, r in account_rows:
+            title = f"{r.get('name', '未命名')}（{r.get('code', '')}）"
+            with st.expander(title, expanded=False):
+                form_key = f"edit_{idx}_{r.get('account')}_{r.get('code')}"
+                with st.form(form_key):
+                    type_label = TYPE_LABELS.get(r.get("type"), "A股个股")
+                    type_choice = st.selectbox(
+                        "资产类型",
+                        list(LABEL_TYPES.keys()),
+                        index=list(LABEL_TYPES.keys()).index(type_label) if type_label in LABEL_TYPES else 0,
+                        key=f"{form_key}_type",
+                    )
+                    c1, c2 = st.columns(2)
+                    name = c1.text_input("名称", value=str(r.get("name", "")), placeholder="例如：中芯国际")
+                    code = c2.text_input("代码", value=str(r.get("code", "")), placeholder="例如：688981")
+                    new_type = LABEL_TYPES[type_choice]
+                    if new_type in {"stock", "lof"}:
+                        c3, c4 = st.columns(2)
+                        cost = c3.number_input("成本价（每股/每份）", value=float(r.get("cost", 0) or 0), step=0.001, format="%.4f")
+                        shares = c4.number_input("持有份额", value=float(r.get("shares", 0) or 0), step=1.0)
+                        raw = {"account": acc, "type": new_type, "name": name, "code": code, "cost": cost, "shares": shares}
+                    else:
+                        c3, c4 = st.columns(2)
+                        market_value = c3.number_input("当前市值（元）", value=float(r.get("market_value", 0) or 0), step=100.0)
+                        profit = c4.number_input("持有收益（元）", value=float(r.get("profit", 0) or 0), step=100.0)
+                        raw = {"account": acc, "type": new_type, "name": name, "code": code, "market_value": market_value, "profit": profit}
+                    submitted = st.form_submit_button("保存这只")
+                c_del, _ = st.columns([1, 3])
+                delete = c_del.button("删除这只", key=f"delete_{idx}_{r.get('code')}")
+                if submitted:
+                    try:
+                        updated = list(records)
+                        updated[idx] = clean_managed_record(raw)
+                        backup = save_managed_holdings(updated)
+                        st.success(f"已保存。备份：{backup or '首次创建，无旧文件'}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"保存失败：{e}")
+                if delete:
+                    updated = [x for i, x in enumerate(records) if i != idx]
+                    backup = save_managed_holdings(updated)
+                    st.success(f"已删除。备份：{backup or '首次创建，无旧文件'}")
+                    st.rerun()
+
+        with st.expander(f"添加一只到 {acc}", expanded=False):
+            add_key = f"add_{acc}"
+            with st.form(add_key):
+                type_choice = st.selectbox("资产类型", list(LABEL_TYPES.keys()), key=f"{add_key}_type")
+                c1, c2 = st.columns(2)
+                name = c1.text_input("名称", placeholder="例如：中芯国际")
+                code = c2.text_input("代码", placeholder="例如：688981")
+                new_type = LABEL_TYPES[type_choice]
+                if new_type in {"stock", "lof"}:
+                    c3, c4 = st.columns(2)
+                    cost = c3.number_input("成本价（每股/每份）", min_value=0.0, step=0.001, format="%.4f")
+                    shares = c4.number_input("持有份额", min_value=0.0, step=1.0)
+                    raw = {"account": acc, "type": new_type, "name": name, "code": code, "cost": cost, "shares": shares}
+                else:
+                    c3, c4 = st.columns(2)
+                    market_value = c3.number_input("当前市值（元）", min_value=0.0, step=100.0)
+                    profit = c4.number_input("持有收益（元）", step=100.0)
+                    raw = {"account": acc, "type": new_type, "name": name, "code": code, "market_value": market_value, "profit": profit}
+                add = st.form_submit_button("添加并保存")
+            if add:
+                try:
+                    updated = records + [clean_managed_record(raw)]
+                    backup = save_managed_holdings(updated)
+                    st.success(f"已添加。备份：{backup or '首次创建，无旧文件'}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"添加失败：{e}")
+        st.divider()
+
+
+def render_home(df, exposure, board_source, snapshot_history):
+    total_mv = df["市值"].sum()
+    total_pnl = df["盈亏"].sum()
+    total_cost = df["成本额"].sum()
+    today_pnl = df["今日估算盈亏"].sum()
+    total_rate = total_pnl / total_cost * 100 if total_cost else 0
+
+    c = st.columns(3)
+    with c[0]:
+        card("总资产", esc(fmt_money(total_mv)), "当前三账户合计")
+    with c[1]:
+        card("今日估算盈亏", value_html(today_pnl, " 元", signed=True), "场外基金可能晚间更新", cls(today_pnl))
+    with c[2]:
+        card("累计盈亏", value_html(total_pnl, " 元", signed=True), f"{total_rate:+.1f}%", cls(total_pnl))
+
+    acc_cols = st.columns(3)
+    for col, acc in zip(acc_cols, ["银河证券", "东方财富", "支付宝"]):
+        sub = df[df["account"] == acc]
+        mv = sub["市值"].sum()
+        pnl = sub["盈亏"].sum()
+        with col:
+            card(acc, esc(fmt_money(mv)), f'<span class="{cls(pnl)}">{pnl:+,.0f} 元</span>')
+
+    st.divider()
+    if len(exposure):
+        biggest = exposure.iloc[0]
+        hot_part = exposure.dropna(subset=["近期温度"])
+        hot = hot_part.sort_values("近期温度", ascending=False).iloc[0] if len(hot_part) else None
+        c = st.columns(2)
+        with c[0]:
+            card("最大持仓板块", esc(biggest["板块"]), f"占总资产 {biggest['占总资产比例']:.1f}%")
+        with c[1]:
+            if hot is not None:
+                card("近期最热持仓板块", esc(hot["板块"]), f"近期温度 {hot['近期温度']:.0f}｜{hot['近期情绪']}")
+            else:
+                card("近期最热持仓板块", "—", "历史不足")
+        high_risk = exposure[(exposure["占总资产比例"] >= 20) & (exposure["近期温度"] >= 75)]
+        if len(high_risk):
+            r = high_risk.iloc[0]
+            st.warning(f"{r['板块']} 当前属于“高仓位 + 近期高热度”组合，请关注波动风险。该提示不构成买卖建议。")
+        else:
+            st.info("当前未识别到明显“高仓位 + 近期高热度”组合。")
+    else:
+        st.info("当前还没有可展示的持仓板块数据。")
+    st.subheader("收益曲线")
+    render_performance_curve(snapshot_history, "total")
+    st.caption(f"数据更新于：{board_source}")
+    with st.expander("数据详情", expanded=False):
+        st.dataframe(health_summary(df, board_source, using_old_boards), use_container_width=True, hide_index=True)
+    with st.expander("今日大白话复盘", expanded=False):
+        st.write(daily_recap(exposure, total_mv))
+    risk_notice(st)
+
+
+def render_holding_overview(df, snapshot_history):
+    total_mv = df["市值"].sum()
+    total_pnl = df["盈亏"].sum()
+    total_cost = df["成本额"].sum()
+    rate = total_pnl / total_cost * 100 if total_cost else 0
+    c = st.columns(3)
+    with c[0]:
+        card("总资产", esc(fmt_money(total_mv)), "")
+    with c[1]:
+        card("总盈亏", value_html(total_pnl, " 元", signed=True), "", cls(total_pnl))
+    with c[2]:
+        card("总收益率", f'<span class="{cls(rate)}">{rate:+.1f}%</span>', "")
+
+    st.subheader("收益曲线")
+    render_performance_curve(snapshot_history, "total")
+
+    st.subheader("账户小计")
+    cols = st.columns(3)
+    for col, acc in zip(cols, ["银河证券", "东方财富", "支付宝"]):
+        sub = df[df["account"] == acc]
+        pnl = sub["盈亏"].sum()
+        with col:
+            card(acc, esc(fmt_money(sub["市值"].sum())), f'<span class="{cls(pnl)}">{pnl:+,.0f} 元</span>')
+
+    st.subheader("资产类型")
+    cols = st.columns(3)
+    for col, (t, name) in zip(cols, [("stock", "A股"), ("lof", "场内基金"), ("otc", "场外基金")]):
+        sub = df[df["type"] == t]
+        with col:
+            card(name, esc(fmt_money(sub["市值"].sum())), f"{sub['市值'].sum()/total_mv*100 if total_mv else 0:.1f}%")
+
+    st.subheader("全部持仓简表")
+    show = df.copy()
+    show["市值"] = show["市值"].map(lambda v: f"{v:,.0f}")
+    show["盈亏"] = show["盈亏"].map(lambda v: f"{v:+,.0f}")
+    show["盈亏率"] = show["盈亏率"].map(lambda v: f"{v:+.1f}%")
+    st.dataframe(
+        show[["account", "name", "code", "市值", "盈亏", "盈亏率", "数据日期"]].rename(
+            columns={"account": "账户", "name": "名称", "code": "代码"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_account(df, account, with_chart, snapshot_history):
+    sub = df[df["account"] == account]
+    total_mv = sub["市值"].sum()
+    total_pnl = sub["盈亏"].sum()
+    total_cost = sub["成本额"].sum()
+    rate = total_pnl / total_cost * 100 if total_cost else 0
+    c = st.columns(3)
+    with c[0]:
+        card("账户市值", esc(fmt_money(total_mv)), account)
+    with c[1]:
+        card("账户盈亏", value_html(total_pnl, " 元", signed=True), "", cls(total_pnl))
+    with c[2]:
+        card("收益率", f'<span class="{cls(rate)}">{rate:+.1f}%</span>', "")
+
+    st.subheader("收益曲线")
+    scope = {"银河证券": "galaxy", "东方财富": "eastmoney", "支付宝": "alipay"}[account]
+    render_performance_curve(snapshot_history, scope)
+
+    for _, r in sub.iterrows():
+        holding_card(r, with_chart=with_chart, otc=(r["type"] == "otc"))
+
+
+def render_holdings(df, snapshot_history):
+    render_glossary(st, PAGE_TERMS["holding"])
+    choice = st.selectbox("持仓视图", ["总览", "银河·场内基金", "东财·A股", "支付宝·场外"], label_visibility="collapsed")
+    if choice == "总览":
+        render_holding_overview(df, snapshot_history)
+    elif choice == "银河·场内基金":
+        render_account(df, "银河证券", True, snapshot_history)
+    elif choice == "东财·A股":
+        render_account(df, "东方财富", True, snapshot_history)
+    else:
+        render_account(df, "支付宝", False, snapshot_history)
+    risk_notice(st)
+
+
+def render_radar(live, board_source, using_old):
+    render_glossary(st, PAGE_TERMS["radar"])
+    if live is None or len(live) == 0:
+        st.error("板块数据暂时不可用。")
+        return
+    st.caption(f"{board_source}｜旧数据：{'是' if using_old else '否'}")
+    top = live.sort_values("情绪温度分", ascending=False).head(15)
+    rising = live.dropna(subset=["温度变化"])
+    rising = rising[rising["温度变化"] > 0].sort_values("温度变化", ascending=False).head(10)
+    cooling = live.dropna(subset=["温度变化"])
+    cooling = cooling[(cooling["情绪温度分"] >= 60) & (cooling["温度变化"] < 0)].sort_values("温度变化").head(10)
+
+    st.subheader("温度排行 Top15")
+    mini_table(board_trend_table(top))
+    st.subheader("升温榜")
+    mini_table(board_trend_table(rising))
+    st.subheader("高位降温榜")
+    mini_table(board_trend_table(cooling))
+
+    with st.expander("温度分拆解 / 数据可信度 / 历史趋势", expanded=False):
+        board = st.selectbox("选择板块", live.sort_values("板块")["板块"].tolist())
+        row = live[live["板块"] == board].iloc[0]
+        c = st.columns(4)
+        metric_with_help(c[0], "温度分", f"{row['情绪温度分']:.0f}", term="情绪温度分")
+        metric_with_help(c[1], "情绪标签", row["情绪标签"], term=row["情绪标签"])
+        metric_with_help(c[2], "可信度", row["数据可信度"], term="数据可信度")
+        metric_with_help(c[3], "趋势", row["趋势箭头"], term="趋势箭头")
+        st.dataframe(score_breakdown(row), use_container_width=True, hide_index=True)
+    risk_notice(st)
+
+
+def render_my_boards(exposure, fund_map, recent_note):
+    render_glossary(st, PAGE_TERMS["mine"])
+    if len(exposure) == 0:
+        st.error("暂无持仓板块数据。")
+        return
+    st.caption(f"近期情绪口径：{recent_note} 这是用板块涨跌、资金流、上涨家数和成交额估算的拥挤度，不直接抓社交媒体。")
+    show = exposure.copy()
+    show["_a_share_first"] = show["温度板块"].map(lambda x: 1 if valid_board_name(x) else 0)
+    show = show.sort_values(["_a_share_first", "持仓市值"], ascending=[False, False]).reset_index(drop=True)
+    show["占比"] = show["占总资产比例"].map(lambda v: f"{v:.1f}%")
+    show["近期温度"] = show["近期温度"].map(lambda v: "—" if pd.isna(v) else f"{v:.0f}")
+    st.dataframe(
+        show[["板块", "占比", "近期温度", "近期情绪"]].rename(columns={"近期情绪": "状态"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+    high_risk = exposure[(exposure["占总资产比例"] >= 20) & (exposure["近期温度"] >= 75)]
+    if len(high_risk):
+        r = high_risk.iloc[0]
+        st.warning(f"{r['板块']} 属于“高仓位 + 近期高热度”组合，请关注波动和回撤风险。该提示不构成买卖建议。")
+    else:
+        st.info("当前未识别到明显“高仓位 + 近期高热度”组合。")
+
+    with st.expander("当日温度参考", expanded=False):
+        day = exposure.copy()
+        day["当日温度"] = day["温度分"].map(lambda v: "—" if pd.isna(v) else f"{v:.0f}")
+        st.dataframe(
+            day[["板块", "温度板块", "当日温度", "情绪标签", "数据可信度", "趋势"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("情景模拟", expanded=False):
+        sims = []
+        for _, r in exposure.head(6).iterrows():
+            for drop in (5, 10):
+                impact = r["占总资产比例"] * drop / 100
+                sims.append({"情景": f"{r['板块']} 下跌 {drop}%", "总资产估算影响": f"约回撤 {impact:.1f}%"})
+        st.dataframe(pd.DataFrame(sims), use_container_width=True, hide_index=True)
+        st.caption("静态估算，不代表真实未来涨跌，也不构成买卖建议。")
+
+    with st.expander("基金穿透明细", expanded=False):
+        fund_rows = []
+        for code, fm in fund_map.items():
+            holding = next((h for h in HOLDINGS if h["code"] == code), None)
+            if not holding:
+                continue
+            board = normalize_board_name(fm["main_board"])
+            fund_rows.append({
+                "基金": f"{holding['name']} {code}",
+                "主要板块": board,
+                "估算占比": extract_weight_text(fm.get("detail", "")),
+                "说明": "境外/非A股，无法直接使用A股板块温度衡量。" if str(board).startswith("无") else "根据前十大重仓估算。",
+            })
+        if fund_rows:
+            st.dataframe(pd.DataFrame(fund_rows), use_container_width=True, hide_index=True)
+        for _, r in exposure[exposure["说明"].astype(str) != ""].iterrows():
+            st.markdown(f"**{r['板块']}**")
+            st.write(r["说明"][:900] + ("..." if len(r["说明"]) > 900 else ""))
+    risk_notice(st)
+
+
+def render_advanced(df, board_source, using_old, fund_map):
+    st.caption("这里放维护功能，日常看盘不用打开。")
+    section = st.selectbox("高级功能", ["持仓管理", "持仓导入", "数据更新日志", "基金穿透明细", "JSON/CSV 示例"], label_visibility="collapsed")
+    if section == "持仓管理":
+        render_holding_manager()
+    elif section == "持仓导入":
+        template = st.selectbox("截图来源", list(IMPORT_TEMPLATES.keys()))
+        holding_import_widget(template, f"advanced_{template}")
+    elif section == "数据更新日志":
+        health = health_summary(df, board_source, using_old)
+        st.dataframe(health, use_container_width=True, hide_index=True)
+        log = load_update_log()
+        if len(log):
+            st.dataframe(log[["update_time", "task_name", "status", "data_date", "retry_count", "error_msg"]], use_container_width=True, hide_index=True)
+        else:
+            st.warning("暂无 update_log 记录。")
+    elif section == "基金穿透明细":
+        rows = []
+        for code, fm in fund_map.items():
+            rows.append({"代码": code, "主板块": fm.get("main_board", ""), "明细": fm.get("detail", "")})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        with st.expander("通用 JSON / CSV 示例", expanded=True):
+            st.code(SAMPLE_JSON, language="json")
+            st.code(SAMPLE_CSV, language="csv")
+        with st.expander("视觉模型提示词", expanded=False):
+            st.code(VISION_PROMPT_EASTMONEY_A_STOCK, language="text")
+            st.code(VISION_PROMPT_GALAXY_LOF, language="text")
+            st.code(VISION_PROMPT_ALIPAY_OTC, language="text")
+    risk_notice(st)
+
+
+df = compute()
+snapshot_history = load_snapshot_history()
+fund_map = load_fund_board_map()
+try:
+    board_history = load_board_history()
+    recent_sentiment, recent_note = build_recent_sentiment(board_history)
+    raw_boards, board_source, using_old_boards = boards_live()
+    live = score_boards(raw_boards, board_history)
+except Exception as e:
+    board_history = pd.DataFrame()
+    recent_sentiment, recent_note = {}, f"历史不足：{e}"
+    live = None
+    board_source = f"失败：{e}"
+    using_old_boards = True
+
+exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
+
+st.title("我的全资产管理台")
+
+page = st.segmented_control(
+    "页面",
+    ["首页", "持仓", "板块雷达", "我的板块", "高级功能"],
+    default="首页",
+    label_visibility="collapsed",
+    width="stretch",
+)
+
+if page == "首页":
+    render_home(df, exposure, board_source, snapshot_history)
+elif page == "持仓":
+    render_holdings(df, snapshot_history)
+elif page == "板块雷达":
+    render_radar(live, board_source, using_old_boards)
+elif page == "我的板块":
+    render_my_boards(exposure, fund_map, recent_note)
+else:
+    render_advanced(df, board_source, using_old_boards, fund_map)

@@ -1,0 +1,7 @@
+holdings_data.json
+stock_data.db
+backups/
+__pycache__/
+*.pyc
+optional/notify_config.json
+.streamlit/secrets.toml
