@@ -381,32 +381,22 @@ def compact_metric_with_help(col, label, value, term=None):
 
 
 def radar_metric_strip(items):
-    cells = []
-    for label, value in items:
-        cells.append(
-            f"""
-            <div class="radar-mini">
-                <div class="radar-mini-label">{esc(label)}</div>
-                <div class="radar-mini-value">{esc(value)}</div>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="radar-strip">{"".join(cells)}</div>', unsafe_allow_html=True)
+    cols = st.columns(4)
+    for col, (label, value) in zip(cols, items):
+        with col:
+            with st.container(border=True):
+                st.caption(label)
+                st.markdown(f"**{value}**")
 
 
 def score_breakdown_grid(row):
     rows = score_breakdown(row).to_dict("records")
-    cells = []
-    for r in rows:
-        cells.append(
-            f"""
-            <div class="score-cell">
-                <span class="score-name">{esc(r["维度"])}</span>
-                <span class="score-value">{esc(r["得分"])}</span>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="score-grid">{"".join(cells)}</div>', unsafe_allow_html=True)
+    for i in range(0, len(rows), 2):
+        cols = st.columns(2)
+        for col, r in zip(cols, rows[i:i + 2]):
+            with col:
+                st.caption(r["维度"])
+                st.markdown(f"**{r['得分']}**")
 
 
 def render_diff_preview(rows):
