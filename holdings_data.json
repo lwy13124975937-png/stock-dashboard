@@ -135,6 +135,14 @@
       "code": "018147",
       "market_value": 339.56,
       "profit": 19.38
+    },
+    {
+      "account": "东方财富",
+      "type": "stock",
+      "name": "中芯国际",
+      "code": "688981",
+      "cost": 20.0,
+      "shares": 1000.0
     }
   ],
   "board_map": {
