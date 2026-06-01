@@ -1,6 +1,6 @@
 # Streamlit Community Cloud 上云步骤
 
-这份说明给非技术用户照着做。目标是：代码放到 GitHub 私有仓库，真实持仓不进 Git；部署后在网页里手动录入持仓。
+这份说明给非技术用户照着做。目标是：代码和 `holdings_data.json` 放到 GitHub 私有仓库；手机网页里改持仓后，应用自动把新文件提交回这个私有仓库。
 
 参考官方文档：
 
@@ -12,13 +12,14 @@
 
 项目里这些文件不要上传到 GitHub：
 
-- `holdings_data.json`：真实持仓，包含成本、份额、市值、收益。
 - `stock_data.db`：本地数据库缓存。
 - `backups/`：历史备份。
 - `optional/notify_config.json`：提醒配置。
 - `__pycache__/`：Python 缓存。
 
 这些已写进 `.gitignore`。
+
+`holdings_data.json` 现在需要上传到私有仓库，手机端保存持仓时会自动更新它。
 
 ## 2. 建 GitHub 私有仓库
 
@@ -44,7 +45,7 @@ git push -u origin main
 ```
 
 7. 推送时 GitHub 现在不能用账号密码登录，需要用 Personal Access Token。
-8. 上传后再看一眼：仓库里不应该出现 `holdings_data.json` 和 `stock_data.db`。
+8. 上传后再看一眼：仓库里应该有 `holdings_data.json`，但不应该有 `stock_data.db`。
 
 ## 3. 部署到 Streamlit Community Cloud
 
@@ -61,14 +62,23 @@ git push -u origin main
 stock_app.py
 ```
 
-9. 打开 Advanced settings / Secrets，填入：
+9. 打开 Advanced settings / Secrets，填入 GitHub 写回用的 Token：
 
 ```toml
-HOLDINGS_DATA_JSON = '''把 holdings_data.json 的完整内容粘贴到这里'''
+GH_TOKEN = "把你的 GitHub Personal Access Token 粘贴到这里"
 ```
 
-10. 点 `Deploy`。
-11. 等几分钟，页面会生成一个 `streamlit.app` 网址。
+10. 如果以后想覆盖默认仓库信息，也可以额外填：
+
+```toml
+GH_OWNER = "lwy13124975937-png"
+GH_REPO = "stock-dashboard"
+GH_BRANCH = "main"
+GH_PATH = "holdings_data.json"
+```
+
+11. 点 `Deploy`。
+12. 等几分钟，页面会生成一个 `streamlit.app` 网址。
 
 ## 4. 设置仅自己可见
 
@@ -82,7 +92,7 @@ HOLDINGS_DATA_JSON = '''把 holdings_data.json 的完整内容粘贴到这里'''
 
 ## 5. 首次部署后录入持仓
 
-因为 `holdings_data.json` 不上传，云端第一次打开时会是空持仓，这是正常的。
+因为 `holdings_data.json` 已经在私有仓库里，云端打开后会直接读取这份持仓。
 
 1. 打开你的 Streamlit 页面。
 2. 进入 `高级功能`。
@@ -98,34 +108,18 @@ HOLDINGS_DATA_JSON = '''把 holdings_data.json 的完整内容粘贴到这里'''
    - 场外基金
 7. 填名称、代码、成本价、份额；场外基金填当前市值和持有收益。
 8. 点 `添加并保存`。
-9. 系统会自动写入云端的 `holdings_data.json`，并备份旧版本。
+9. 系统会先写入运行环境里的 `holdings_data.json`，再通过 GitHub API 提交回私有仓库。
+10. 保存成功后，应用会提示“已保存并同步到云端”，约 1 分钟后刷新就是最新数据。
 
 ## 6. 重要限制
 
-- Streamlit Community Cloud 不适合做真正的每日定时任务。
-- 如果要每个交易日收盘后自动跑 `update_data.py`，更适合用云服务器或 GitHub Actions。
+- Streamlit Community Cloud 不适合做真正的每日定时任务，所以每日收益快照交给 GitHub Actions。
 - 当前页面打开时会读取行情；板块长期情绪需要 `board_heat` 连续多日数据，否则会显示“历史不足”。
-- Community Cloud 的运行环境可能因重启或重新部署丢失运行时写入的文件；录入持仓后要定期在“高级功能”里检查，长期稳定方案仍建议后续换云服务器或外部数据库。
+- 手机端保存持仓会写回 GitHub 私有仓库；只要 `GH_TOKEN` 配好，重启后也能读到最新持仓。
 
 ## 7. GitHub Actions 每日快照怎么用
 
-项目里已经有 `.github/workflows/daily.yml`。它会在周一到周五北京时间约 15:40 自动运行一次：安装依赖、读取加密持仓 Secret、运行 `daily_snapshot.py`，再把 `history/` 里的收益历史和板块历史提交回仓库。
-
-因为 `holdings_data.json` 不能上传到 GitHub，所以要把它放进 GitHub Secret：
-
-1. 在自己电脑打开 `holdings_data.json`。
-2. 全选里面的内容并复制。
-3. 打开 GitHub 仓库页面。
-4. 进入 `Settings` -> `Secrets and variables` -> `Actions`。
-5. 点 `New repository secret`。
-6. Name 填：
-
-```text
-HOLDINGS_DATA_JSON
-```
-
-7. Secret 内容粘贴刚才复制的 JSON。
-8. 点保存。
+项目里已经有 `.github/workflows/daily.yml`。它会在周一到周五北京时间约 15:40 自动运行一次：安装依赖、读取仓库里的 `holdings_data.json`、运行 `daily_snapshot.py`，再把 `history/` 里的收益历史和板块历史提交回仓库。
 
 还要打开自动提交权限：
 
@@ -135,7 +129,7 @@ HOLDINGS_DATA_JSON
 4. 选择 `Read and write permissions`。
 5. 点 `Save`。
 
-以后自动任务生成的是 `history/snapshots.csv` 和 `history/board_heat.csv`，这两个文件会提交到 Git；真实持仓文件 `holdings_data.json` 仍然不会提交。
+以后自动任务生成的是 `history/snapshots.csv` 和 `history/board_heat.csv`，这两个文件会提交到 Git；手机端改持仓时，`holdings_data.json` 也会被应用提交回私有仓库。
 
 ## 8. Personal Access Token 怎么生成
 

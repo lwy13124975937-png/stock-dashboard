@@ -5,7 +5,9 @@ for v in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all
     os.environ.pop(v, None)
 os.environ["NO_PROXY"]="*"; os.environ["no_proxy"]="*"
 
+import base64
 import html
+import json
 import re
 import sqlite3
 import time
@@ -14,6 +16,7 @@ from datetime import datetime, timedelta
 import akshare as ak
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 from plotly.subplots import make_subplots
 
@@ -36,7 +39,7 @@ from holding_import import (
     write_holdings,
 )
 from my_holdings import load_holdings_data
-from project_paths import BOARD_HEAT_HISTORY_FILE, DB, SNAPSHOTS_FILE
+from project_paths import BOARD_HEAT_HISTORY_FILE, DB, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
 from term_help import RISK_TIP, render_glossary, render_term, risk_notice
 
 
@@ -82,6 +85,17 @@ st.markdown(
     .metric-label { color: var(--muted); font-size: 13px; margin-bottom: 7px; }
     .metric-value { color: var(--text); font-size: 25px; line-height: 1.18; font-weight: 800; word-break: break-word; }
     .metric-sub { color: var(--muted); font-size: 13px; margin-top: 7px; }
+    .compact-metric-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, .05);
+        padding: 12px 14px;
+        min-height: 76px;
+        margin-bottom: 8px;
+    }
+    .compact-metric-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .compact-metric-value { color: var(--text); font-size: 20px; line-height: 1.22; font-weight: 800; word-break: break-word; }
     .pos { color: var(--red) !important; }
     .neg { color: var(--green) !important; }
     .flat { color: var(--muted) !important; }
@@ -128,6 +142,8 @@ st.markdown(
         .block-container { padding-top: 2rem; padding-left: .72rem; padding-right: .72rem; }
         .metric-card { min-height: 84px; padding: 12px; }
         .metric-value { font-size: 21px; }
+        .compact-metric-card { min-height: 64px; padding: 10px; }
+        .compact-metric-value { font-size: 16px; }
         .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .mini-row { grid-template-columns: 1.25fr .65fr .65fr .75fr; gap: 6px; font-size: 13px; }
     }
@@ -294,6 +310,80 @@ def metric_with_help(col, label, value, delta=None, term=None):
         st.metric(label, value, delta)
         if term:
             render_term(st, term)
+
+
+def compact_metric_with_help(col, label, value, term=None):
+    with col:
+        st.markdown(
+            f"""
+            <div class="compact-metric-card">
+                <div class="compact-metric-label">{esc(label)}</div>
+                <div class="compact-metric-value">{esc(value)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if term:
+            render_term(st, term)
+
+
+def secret_value(name, default=""):
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        return default
+    return value if value is not None else default
+
+
+def github_error_text(resp):
+    try:
+        data = resp.json()
+    except Exception:
+        return resp.text[:220]
+    message = str(data.get("message", "")).strip()
+    errors = data.get("errors", [])
+    if errors:
+        detail = "; ".join(str(e.get("message", e)) if isinstance(e, dict) else str(e) for e in errors[:2])
+        message = f"{message}：{detail}" if message else detail
+    return message[:260] or "GitHub 返回了未知错误"
+
+
+def push_holdings_to_github(json_text):
+    token = secret_value("GH_TOKEN", "")
+    if not token:
+        return False, "未配置 GH_TOKEN，本地已保存，但还没有同步到 GitHub。请先在 Streamlit Secrets 里添加 GH_TOKEN。"
+
+    owner = secret_value("GH_OWNER", "lwy13124975937-png")
+    repo = secret_value("GH_REPO", "stock-dashboard")
+    branch = secret_value("GH_BRANCH", "main")
+    path = secret_value("GH_PATH", "holdings_data.json")
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        get_resp = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        sha = None
+        if get_resp.status_code == 200:
+            sha = get_resp.json().get("sha")
+        elif get_resp.status_code != 404:
+            return False, f"读取 GitHub 现有持仓失败：HTTP {get_resp.status_code}，{github_error_text(get_resp)}"
+
+        payload = {
+            "message": "update holdings via app",
+            "content": base64.b64encode(json_text.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        put_resp = requests.put(url, headers=headers, json=payload, timeout=25)
+        if put_resp.status_code in (200, 201):
+            return True, ""
+        return False, f"同步到 GitHub 失败：HTTP {put_resp.status_code}，{github_error_text(put_resp)}"
+    except requests.RequestException as e:
+        return False, f"连接 GitHub 失败：{type(e).__name__}"
 
 
 def render_performance_curve(history, scope="total"):
@@ -957,12 +1047,8 @@ def holding_import_widget(template_name, key_prefix):
         phrase = st.text_input("请输入：确认写入", key=f"{key_prefix}_phrase")
         if st.button("备份旧文件并写入 holdings_data.json", disabled=not (checked and phrase == "确认写入"), key=f"{key_prefix}_write"):
             try:
-                backup = write_holdings(final_records)
-                msg = f"已写入 holdings_data.json。"
-                if backup:
-                    msg += f" 旧文件已备份到：{backup}"
-                st.success(msg)
-                st.cache_data.clear()
+                backup, sync_ok, sync_msg = save_managed_holdings(final_records)
+                show_holdings_save_result(backup, sync_ok, sync_msg)
                 st.rerun()
             except Exception as e:
                 st.error(f"写入失败：{e}")
@@ -997,14 +1083,40 @@ def clean_managed_record(raw):
 
 
 def save_managed_holdings(records):
+    global HOLDINGS, BOARD_MAP
     backup = write_holdings(records, BOARD_MAP)
+    json_text = HOLDINGS_DATA_FILE.read_text(encoding="utf-8")
+    st.session_state["holdings_data_json"] = json_text
+    st.session_state["holdings_records"] = json.loads(json_text).get("holdings", [])
+    sync_ok, sync_msg = push_holdings_to_github(json_text)
+    HOLDINGS, BOARD_MAP = load_holdings_data()
     st.cache_data.clear()
-    return backup
+    return backup, sync_ok, sync_msg
+
+
+def show_holdings_save_result(backup, sync_ok, sync_msg):
+    if sync_ok:
+        st.session_state["holdings_save_notice"] = ("success", "已保存并同步到云端，应用将在约1分钟后刷新为最新数据", str(backup or ""))
+        st.success("已保存并同步到云端，应用将在约1分钟后刷新为最新数据")
+        if backup:
+            st.caption(f"旧文件已备份到：{backup}")
+    else:
+        st.session_state["holdings_save_notice"] = ("error", sync_msg, "")
+        st.error(sync_msg)
 
 
 def render_holding_manager():
     st.subheader("持仓管理")
     st.caption("这里会直接写入 holdings_data.json，并在保存前自动备份上一版。")
+    notice = st.session_state.pop("holdings_save_notice", None)
+    if notice:
+        level, message, backup_text = notice
+        if level == "success":
+            st.success(message)
+            if backup_text:
+                st.caption(f"旧文件已备份到：{backup_text}")
+        else:
+            st.error(message)
     records = current_holdings()
     accounts = ["银河证券", "东方财富", "支付宝"]
     for acc in accounts:
@@ -1045,15 +1157,15 @@ def render_holding_manager():
                     try:
                         updated = list(records)
                         updated[idx] = clean_managed_record(raw)
-                        backup = save_managed_holdings(updated)
-                        st.success(f"已保存。备份：{backup or '首次创建，无旧文件'}")
+                        backup, sync_ok, sync_msg = save_managed_holdings(updated)
+                        show_holdings_save_result(backup, sync_ok, sync_msg)
                         st.rerun()
                     except Exception as e:
                         st.error(f"保存失败：{e}")
                 if delete:
                     updated = [x for i, x in enumerate(records) if i != idx]
-                    backup = save_managed_holdings(updated)
-                    st.success(f"已删除。备份：{backup or '首次创建，无旧文件'}")
+                    backup, sync_ok, sync_msg = save_managed_holdings(updated)
+                    show_holdings_save_result(backup, sync_ok, sync_msg)
                     st.rerun()
 
         with st.expander(f"添加一只到 {acc}", expanded=False):
@@ -1078,8 +1190,8 @@ def render_holding_manager():
             if add:
                 try:
                     updated = records + [clean_managed_record(raw)]
-                    backup = save_managed_holdings(updated)
-                    st.success(f"已添加。备份：{backup or '首次创建，无旧文件'}")
+                    backup, sync_ok, sync_msg = save_managed_holdings(updated)
+                    show_holdings_save_result(backup, sync_ok, sync_msg)
                     st.rerun()
                 except Exception as e:
                     st.error(f"添加失败：{e}")
@@ -1244,10 +1356,10 @@ def render_radar(live, board_source, using_old):
         board = st.selectbox("选择板块", live.sort_values("板块")["板块"].tolist())
         row = live[live["板块"] == board].iloc[0]
         c = st.columns(4)
-        metric_with_help(c[0], "温度分", f"{row['情绪温度分']:.0f}", term="情绪温度分")
-        metric_with_help(c[1], "情绪标签", row["情绪标签"], term=row["情绪标签"])
-        metric_with_help(c[2], "可信度", row["数据可信度"], term="数据可信度")
-        metric_with_help(c[3], "趋势", row["趋势箭头"], term="趋势箭头")
+        compact_metric_with_help(c[0], "温度分", f"{row['情绪温度分']:.0f}", term="情绪温度分")
+        compact_metric_with_help(c[1], "情绪标签", row["情绪标签"], term=row["情绪标签"])
+        compact_metric_with_help(c[2], "可信度", row["数据可信度"], term="数据可信度")
+        compact_metric_with_help(c[3], "趋势", row["趋势箭头"], term="趋势箭头")
         st.dataframe(score_breakdown(row), use_container_width=True, hide_index=True)
     risk_notice(st)
 
@@ -1307,7 +1419,22 @@ def render_my_boards(exposure, fund_map, recent_note):
                 "说明": "境外/非A股，无法直接使用A股板块温度衡量。" if str(board).startswith("无") else "根据前十大重仓估算。",
             })
         if fund_rows:
-            st.dataframe(pd.DataFrame(fund_rows), use_container_width=True, hide_index=True)
+            for item in fund_rows:
+                st.markdown(
+                    f"""
+                    <div class="holding-card">
+                        <div class="holding-title">{esc(item["基金"])}</div>
+                        <div class="holding-meta">主要板块：{esc(item["主要板块"])}</div>
+                        <div class="kv-grid">
+                            <div class="kv"><div class="kv-label">估算占比</div><div class="kv-value">{esc(item["估算占比"])}</div></div>
+                            <div class="kv"><div class="kv-label">说明</div><div class="kv-value">{esc(item["说明"])}</div></div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("暂无基金穿透明细。")
         for _, r in exposure[exposure["说明"].astype(str) != ""].iterrows():
             st.markdown(f"**{r['板块']}**")
             st.write(r["说明"][:900] + ("..." if len(r["说明"]) > 900 else ""))

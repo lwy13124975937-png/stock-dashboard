@@ -26,26 +26,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check private holdings secret
-        id: holdings
-        env:
-          HOLDINGS_DATA_JSON: ${{ secrets.HOLDINGS_DATA_JSON }}
-        run: |
-          if [ -z "$HOLDINGS_DATA_JSON" ]; then
-            echo "Missing HOLDINGS_DATA_JSON secret. Skip snapshot."
-            echo "has_holdings=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_holdings=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run daily snapshot
-        if: steps.holdings.outputs.has_holdings == 'true'
         env:
           HOLDINGS_DATA_JSON: ${{ secrets.HOLDINGS_DATA_JSON }}
         run: python daily_snapshot.py
 
       - name: Commit history files
-        if: steps.holdings.outputs.has_holdings == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
