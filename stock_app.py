@@ -327,7 +327,7 @@ def compact_metric_with_help(col, label, value, term=None):
             render_term(st, term)
 
 
-def secret_value(name, default=""):
+def optional_secret(name, default=""):
     try:
         value = st.secrets.get(name, default)
     except Exception:
@@ -335,12 +335,27 @@ def secret_value(name, default=""):
     return value if value is not None else default
 
 
-def github_error_text(resp):
+def required_secret(name):
+    try:
+        value = st.secrets[name]
+    except KeyError:
+        raise RuntimeError(f"未读取到 {name}，请检查 Streamlit Secrets 配置")
+    except Exception as e:
+        raise RuntimeError(f"读取 {name} 失败：{type(e).__name__}：{e}")
+    value = str(value).strip()
+    if not value:
+        raise RuntimeError(f"{name} 是空的，请检查 Streamlit Secrets 配置")
+    return value
+
+
+def github_message(resp):
     try:
         data = resp.json()
     except Exception:
         return resp.text[:220]
     message = str(data.get("message", "")).strip()
+    if not message and resp.status_code < 400:
+        return "OK"
     errors = data.get("errors", [])
     if errors:
         detail = "; ".join(str(e.get("message", e)) if isinstance(e, dict) else str(e) for e in errors[:2])
@@ -348,15 +363,58 @@ def github_error_text(resp):
     return message[:260] or "GitHub 返回了未知错误"
 
 
-def push_holdings_to_github(json_text):
-    token = secret_value("GH_TOKEN", "")
-    if not token:
-        return False, "未配置 GH_TOKEN，本地已保存，但还没有同步到 GitHub。请先在 Streamlit Secrets 里添加 GH_TOKEN。"
+def set_github_sync_diag(diag):
+    safe = {
+        "是否读到 GH_TOKEN": diag.get("token_read", "否"),
+        "仓库": diag.get("repo", ""),
+        "分支": diag.get("branch", ""),
+        "文件": diag.get("path", ""),
+        "GET 状态码": diag.get("get_status", "未请求"),
+        "GET message": diag.get("get_message", ""),
+        "PUT 状态码": diag.get("put_status", "未请求"),
+        "PUT message": diag.get("put_message", ""),
+        "异常": diag.get("exception", ""),
+    }
+    st.session_state["github_sync_diag"] = safe
 
-    owner = secret_value("GH_OWNER", "lwy13124975937-png")
-    repo = secret_value("GH_REPO", "stock-dashboard")
-    branch = secret_value("GH_BRANCH", "main")
-    path = secret_value("GH_PATH", "holdings_data.json")
+
+def render_github_sync_diag(expanded=False):
+    diag = st.session_state.get("github_sync_diag")
+    with st.expander("同步诊断（截图排查用）", expanded=expanded):
+        if not diag:
+            st.caption("还没有执行过 GitHub 同步。")
+        else:
+            st.dataframe(
+                pd.DataFrame([{"项目": k, "内容": v} for k, v in diag.items()]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+def push_holdings_to_github(json_text):
+    owner = optional_secret("GH_OWNER", "lwy13124975937-png")
+    repo = optional_secret("GH_REPO", "stock-dashboard")
+    branch = optional_secret("GH_BRANCH", "main")
+    path = optional_secret("GH_PATH", "holdings_data.json")
+    diag = {
+        "token_read": "否",
+        "repo": f"{owner}/{repo}",
+        "branch": branch,
+        "path": path,
+        "get_status": "未请求",
+        "get_message": "",
+        "put_status": "未请求",
+        "put_message": "",
+        "exception": "",
+    }
+    try:
+        token = required_secret("GH_TOKEN")
+        diag["token_read"] = "是"
+    except Exception as e:
+        diag["exception"] = f"{type(e).__name__}：{e}"
+        set_github_sync_diag(diag)
+        return False, str(e)
+
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -365,11 +423,14 @@ def push_holdings_to_github(json_text):
     }
     try:
         get_resp = requests.get(url, headers=headers, params={"ref": branch}, timeout=20)
+        diag["get_status"] = get_resp.status_code
+        diag["get_message"] = github_message(get_resp)
         sha = None
         if get_resp.status_code == 200:
             sha = get_resp.json().get("sha")
         elif get_resp.status_code != 404:
-            return False, f"读取 GitHub 现有持仓失败：HTTP {get_resp.status_code}，{github_error_text(get_resp)}"
+            set_github_sync_diag(diag)
+            return False, f"GitHub GET 返回 {get_resp.status_code}：{diag['get_message']}"
 
         payload = {
             "message": "update holdings via app",
@@ -379,11 +440,16 @@ def push_holdings_to_github(json_text):
         if sha:
             payload["sha"] = sha
         put_resp = requests.put(url, headers=headers, json=payload, timeout=25)
+        diag["put_status"] = put_resp.status_code
+        diag["put_message"] = github_message(put_resp)
+        set_github_sync_diag(diag)
         if put_resp.status_code in (200, 201):
             return True, ""
-        return False, f"同步到 GitHub 失败：HTTP {put_resp.status_code}，{github_error_text(put_resp)}"
-    except requests.RequestException as e:
-        return False, f"连接 GitHub 失败：{type(e).__name__}"
+        return False, f"GitHub PUT 返回 {put_resp.status_code}：{diag['put_message']}"
+    except Exception as e:
+        diag["exception"] = f"{type(e).__name__}：{e}"
+        set_github_sync_diag(diag)
+        return False, f"同步过程异常：{type(e).__name__}：{e}"
 
 
 def render_performance_curve(history, scope="total"):
@@ -1048,10 +1114,11 @@ def holding_import_widget(template_name, key_prefix):
         if st.button("备份旧文件并写入 holdings_data.json", disabled=not (checked and phrase == "确认写入"), key=f"{key_prefix}_write"):
             try:
                 backup, sync_ok, sync_msg = save_managed_holdings(final_records)
-                show_holdings_save_result(backup, sync_ok, sync_msg)
-                st.rerun()
+                handle_holdings_save_result(backup, sync_ok, sync_msg)
             except Exception as e:
-                st.error(f"写入失败：{e}")
+                st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+                st.error(f"写入流程异常：{type(e).__name__}：{e}")
+                render_github_sync_diag(expanded=False)
 
 
 TYPE_LABELS = {
@@ -1103,6 +1170,13 @@ def show_holdings_save_result(backup, sync_ok, sync_msg):
     else:
         st.session_state["holdings_save_notice"] = ("error", sync_msg, "")
         st.error(sync_msg)
+        render_github_sync_diag(expanded=False)
+
+
+def handle_holdings_save_result(backup, sync_ok, sync_msg):
+    show_holdings_save_result(backup, sync_ok, sync_msg)
+    if sync_ok:
+        st.rerun()
 
 
 def render_holding_manager():
@@ -1117,6 +1191,7 @@ def render_holding_manager():
                 st.caption(f"旧文件已备份到：{backup_text}")
         else:
             st.error(message)
+    render_github_sync_diag(expanded=False)
     records = current_holdings()
     accounts = ["银河证券", "东方财富", "支付宝"]
     for acc in accounts:
@@ -1158,15 +1233,20 @@ def render_holding_manager():
                         updated = list(records)
                         updated[idx] = clean_managed_record(raw)
                         backup, sync_ok, sync_msg = save_managed_holdings(updated)
-                        show_holdings_save_result(backup, sync_ok, sync_msg)
-                        st.rerun()
+                        handle_holdings_save_result(backup, sync_ok, sync_msg)
                     except Exception as e:
-                        st.error(f"保存失败：{e}")
+                        st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+                        st.error(f"保存流程异常：{type(e).__name__}：{e}")
+                        render_github_sync_diag(expanded=False)
                 if delete:
-                    updated = [x for i, x in enumerate(records) if i != idx]
-                    backup, sync_ok, sync_msg = save_managed_holdings(updated)
-                    show_holdings_save_result(backup, sync_ok, sync_msg)
-                    st.rerun()
+                    try:
+                        updated = [x for i, x in enumerate(records) if i != idx]
+                        backup, sync_ok, sync_msg = save_managed_holdings(updated)
+                        handle_holdings_save_result(backup, sync_ok, sync_msg)
+                    except Exception as e:
+                        st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+                        st.error(f"删除流程异常：{type(e).__name__}：{e}")
+                        render_github_sync_diag(expanded=False)
 
         with st.expander(f"添加一只到 {acc}", expanded=False):
             add_key = f"add_{acc}"
@@ -1191,10 +1271,11 @@ def render_holding_manager():
                 try:
                     updated = records + [clean_managed_record(raw)]
                     backup, sync_ok, sync_msg = save_managed_holdings(updated)
-                    show_holdings_save_result(backup, sync_ok, sync_msg)
-                    st.rerun()
+                    handle_holdings_save_result(backup, sync_ok, sync_msg)
                 except Exception as e:
-                    st.error(f"添加失败：{e}")
+                    st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+                    st.error(f"添加流程异常：{type(e).__name__}：{e}")
+                    render_github_sync_diag(expanded=False)
         st.divider()
 
 
