@@ -380,7 +380,7 @@ def set_github_sync_diag(diag):
 
 def render_github_sync_diag(expanded=False):
     diag = st.session_state.get("github_sync_diag")
-    with st.expander("同步诊断（截图排查用）", expanded=expanded):
+    with st.expander("同步诊断", expanded=expanded):
         if not diag:
             st.caption("还没有执行过 GitHub 同步。")
         else:
