@@ -39,7 +39,7 @@ from holding_import import (
     write_holdings,
 )
 from my_holdings import load_holdings_data
-from project_paths import BOARD_HEAT_HISTORY_FILE, DB, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
+from project_paths import BOARD_HEAT_HISTORY_FILE, DB, FUND_BOARD_MAP_FILE, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
 from term_help import RISK_TIP, render_glossary, render_term, risk_notice
 
 
@@ -96,6 +96,54 @@ st.markdown(
     }
     .compact-metric-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
     .compact-metric-value { color: var(--text); font-size: 20px; line-height: 1.22; font-weight: 800; word-break: break-word; }
+    .radar-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        margin: 6px 0 8px;
+    }
+    .radar-mini {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 7px 8px;
+        min-height: 52px;
+    }
+    .radar-mini-label { color: var(--muted); font-size: 11px; line-height: 1.1; }
+    .radar-mini-value { color: var(--text); font-size: 15px; line-height: 1.18; font-weight: 800; margin-top: 5px; word-break: break-word; }
+    .score-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        margin-top: 6px;
+    }
+    .score-cell {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 7px 9px;
+        border-bottom: 1px solid var(--line);
+        font-size: 13px;
+    }
+    .score-cell:nth-child(odd) { border-right: 1px solid var(--line); }
+    .score-name { color: var(--muted); }
+    .score-value { font-weight: 800; }
+    .diff-row {
+        border: 1px solid var(--line);
+        border-left-width: 5px;
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin: 8px 0;
+        background: var(--card);
+    }
+    .diff-update { border-left-color: var(--amber); background: #fffaf0; }
+    .diff-add { border-left-color: var(--red); background: #fff7f7; }
+    .diff-delete { border-left-color: var(--green); background: #f4fff8; }
+    .diff-same { border-left-color: #cbd5e1; opacity: .62; }
+    .diff-title { font-weight: 800; margin-bottom: 4px; }
+    .diff-detail { color: var(--text); font-size: 13px; line-height: 1.45; }
     .pos { color: var(--red) !important; }
     .neg { color: var(--green) !important; }
     .flat { color: var(--muted) !important; }
@@ -144,6 +192,11 @@ st.markdown(
         .metric-value { font-size: 21px; }
         .compact-metric-card { min-height: 64px; padding: 10px; }
         .compact-metric-value { font-size: 16px; }
+        .radar-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+        .radar-mini { min-height: 48px; padding: 6px 5px; border-radius: 9px; }
+        .radar-mini-label { font-size: 10px; }
+        .radar-mini-value { font-size: 13px; }
+        .score-cell { font-size: 12px; padding: 6px 7px; }
         .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .mini-row { grid-template-columns: 1.25fr .65fr .65fr .75fr; gap: 6px; font-size: 13px; }
     }
@@ -325,6 +378,55 @@ def compact_metric_with_help(col, label, value, term=None):
         )
         if term:
             render_term(st, term)
+
+
+def radar_metric_strip(items):
+    cells = []
+    for label, value in items:
+        cells.append(
+            f"""
+            <div class="radar-mini">
+                <div class="radar-mini-label">{esc(label)}</div>
+                <div class="radar-mini-value">{esc(value)}</div>
+            </div>
+            """
+        )
+    st.markdown(f'<div class="radar-strip">{"".join(cells)}</div>', unsafe_allow_html=True)
+
+
+def score_breakdown_grid(row):
+    rows = score_breakdown(row).to_dict("records")
+    cells = []
+    for r in rows:
+        cells.append(
+            f"""
+            <div class="score-cell">
+                <span class="score-name">{esc(r["维度"])}</span>
+                <span class="score-value">{esc(r["得分"])}</span>
+            </div>
+            """
+        )
+    st.markdown(f'<div class="score-grid">{"".join(cells)}</div>', unsafe_allow_html=True)
+
+
+def render_diff_preview(rows):
+    if not rows:
+        st.info("没有可预览的差异。")
+        return
+    class_map = {"更新": "diff-update", "新增": "diff-add", "删除": "diff-delete", "不变": "diff-same"}
+    icon_map = {"更新": "●", "新增": "+", "删除": "-", "不变": "·"}
+    for r in rows:
+        action = str(r.get("操作", ""))
+        detail = r.get("变化明细") or "字段无变化"
+        st.markdown(
+            f"""
+            <div class="diff-row {class_map.get(action, '')}">
+                <div class="diff-title">{esc(icon_map.get(action, '·'))} {esc(action)}｜{esc(r.get("名称", ""))} {esc(r.get("代码", ""))}</div>
+                <div class="diff-detail">{esc(r.get("账户", ""))} / {esc(r.get("类型", ""))}｜{esc(detail)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def optional_secret(name, default=""):
@@ -639,12 +741,18 @@ def load_update_log():
 
 @st.cache_data(ttl=600)
 def load_fund_board_map():
+    mp = pd.DataFrame()
     try:
         conn = sqlite3.connect(DB)
         mp = pd.read_sql("SELECT code, main_board, detail FROM fund_board_map", conn)
         conn.close()
     except Exception:
-        return {}
+        mp = pd.DataFrame()
+    if len(mp) == 0 and FUND_BOARD_MAP_FILE.exists():
+        try:
+            mp = pd.read_json(FUND_BOARD_MAP_FILE)
+        except Exception:
+            mp = pd.DataFrame()
     out = {}
     for _, r in mp.iterrows():
         out[str(r["code"])] = {
@@ -1042,7 +1150,7 @@ def holding_card(r, with_chart=False, otc=False):
 def holding_import_widget(template_name, key_prefix):
     cfg = IMPORT_TEMPLATES[template_name]
     st.info(cfg["note"])
-    st.caption(f"本入口只接受：{cfg['account']} + {cfg['type']}。识别结果混入其他账户或类型时会被拦截。")
+    st.caption(f"本入口会自动补：{cfg['account']} + {cfg['type']}。粘贴内容只需要 name, code, shares, cost；如果自带 account/type，则按粘贴内容校验。")
 
     uploaded = st.file_uploader(
         f"上传{template_name}（只预览，不自动写入）",
@@ -1071,7 +1179,7 @@ def holding_import_widget(template_name, key_prefix):
     if st.button("解析并预览", type="primary", key=f"{key_prefix}_parse"):
         try:
             parsed = parse_records(raw)
-            proposed, errors = normalize_records(parsed)
+            proposed, errors = normalize_records(parsed, default_account=cfg["account"], default_type=cfg["type"])
             proposed, duplicate_notes = consolidate_same_code(proposed)
             wrong_scope = [r for r in proposed if r.get("account") != cfg["account"] or r.get("type") != cfg["type"]]
             if errors:
@@ -1106,7 +1214,7 @@ def holding_import_widget(template_name, key_prefix):
             st.warning("同一代码多行处理结果如下，请重点核对。")
             st.dataframe(pd.DataFrame(duplicate_notes), use_container_width=True, hide_index=True)
         st.subheader("差异预览")
-        st.dataframe(pd.DataFrame(diff_records(current, final_records)), use_container_width=True, hide_index=True)
+        render_diff_preview(diff_records(current, final_records))
         st.subheader("识别结果预览")
         st.dataframe(pd.DataFrame(display_records(proposed)), use_container_width=True, hide_index=True)
         checked = st.checkbox("我已核对代码、数量、成本、市值和收益。", key=f"{key_prefix}_checked")
@@ -1436,12 +1544,13 @@ def render_radar(live, board_source, using_old):
     with st.expander("温度分拆解 / 数据可信度 / 历史趋势", expanded=False):
         board = st.selectbox("选择板块", live.sort_values("板块")["板块"].tolist())
         row = live[live["板块"] == board].iloc[0]
-        c = st.columns(4)
-        compact_metric_with_help(c[0], "温度分", f"{row['情绪温度分']:.0f}", term="情绪温度分")
-        compact_metric_with_help(c[1], "情绪标签", row["情绪标签"], term=row["情绪标签"])
-        compact_metric_with_help(c[2], "可信度", row["数据可信度"], term="数据可信度")
-        compact_metric_with_help(c[3], "趋势", row["趋势箭头"], term="趋势箭头")
-        st.dataframe(score_breakdown(row), use_container_width=True, hide_index=True)
+        radar_metric_strip([
+            ("温度分", f"{row['情绪温度分']:.0f}"),
+            ("情绪标签", row["情绪标签"]),
+            ("可信度", row["数据可信度"]),
+            ("趋势", row["趋势箭头"]),
+        ])
+        score_breakdown_grid(row)
     risk_notice(st)
 
 
@@ -1488,16 +1597,22 @@ def render_my_boards(exposure, fund_map, recent_note):
 
     with st.expander("基金穿透明细", expanded=False):
         fund_rows = []
-        for code, fm in fund_map.items():
-            holding = next((h for h in HOLDINGS if h["code"] == code), None)
-            if not holding:
+        fund_holdings = [h for h in HOLDINGS if str(h.get("type", "")) in ("lof", "otc")]
+        for holding in fund_holdings:
+            code = str(holding.get("code", ""))
+            if not code:
                 continue
-            board = normalize_board_name(fm["main_board"])
+            fm = fund_map.get(code, {})
+            raw_board = fm.get("main_board") or BOARD_MAP.get(code, ["", "None"])[1]
+            board = normalize_board_name(raw_board)
+            detail = fm.get("detail", "")
+            is_foreign = str(board).startswith("无") or not valid_board_name(board)
             fund_rows.append({
                 "基金": f"{holding['name']} {code}",
-                "主要板块": board,
-                "估算占比": extract_weight_text(fm.get("detail", "")),
-                "说明": "境外/非A股，无法直接使用A股板块温度衡量。" if str(board).startswith("无") else "根据前十大重仓估算。",
+                "主要板块": board if valid_board_name(board) else "境外/非A股",
+                "估算占比": extract_weight_text(detail),
+                "说明": "该基金重仓非A股标的，无法映射A股板块。" if is_foreign else "根据前十大重仓估算。",
+                "明细": detail,
             })
         if fund_rows:
             for item in fund_rows:

@@ -69,13 +69,17 @@ def to_float(value, field):
     return float(s)
 
 
-def normalize_records(records, fill_from_current=True):
+def normalize_records(records, fill_from_current=True, default_account=None, default_type=None):
     out = []
     errors = []
     for idx, raw in enumerate(records, 1):
         try:
             r = {str(k).strip(): v for k, v in dict(raw).items()}
-            missing = REQUIRED_COMMON - set(r)
+            if not r.get("account") and default_account:
+                r["account"] = default_account
+            if not r.get("type") and default_type:
+                r["type"] = default_type
+            missing = REQUIRED_COMMON - {k for k, v in r.items() if v not in (None, "")}
             if missing:
                 raise ValueError(f"缺少字段：{', '.join(sorted(missing))}")
             item = {
@@ -93,8 +97,10 @@ def normalize_records(records, fill_from_current=True):
                 current = current_by_key().get(holding_key(item), {}) if fill_from_current else {}
                 mv = r.get("market_value")
                 profit = r.get("profit")
+                if mv in (None, "") and current.get("market_value") in (None, "") and r.get("shares") not in (None, "") and r.get("cost") not in (None, ""):
+                    mv = to_float(r.get("shares"), "shares") * to_float(r.get("cost"), "cost")
                 item["market_value"] = to_float(mv if mv not in (None, "") else current.get("market_value"), "market_value")
-                item["profit"] = to_float(profit if profit not in (None, "") else current.get("profit"), "profit")
+                item["profit"] = to_float(profit if profit not in (None, "") else current.get("profit", 0), "profit")
             for field in IMPORT_META_FIELDS:
                 if field in r and r.get(field) not in (None, ""):
                     item[field] = r.get(field)
@@ -238,6 +244,61 @@ def consolidate_same_code(records):
     return consolidated, notes
 
 
+def _fmt_num(value, digits=3):
+    try:
+        v = float(value)
+    except Exception:
+        return str(value)
+    text = f"{v:.{digits}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _change_text(label, old_value, new_value, field=None):
+    old_text = _fmt_num(old_value)
+    new_text = _fmt_num(new_value)
+    if field == "shares":
+        delta = float(new_value or 0) - float(old_value or 0)
+        if abs(delta) > 1e-9:
+            word = "加仓" if delta > 0 else "减仓"
+            return f"{label} {old_text}→{new_text}（{word}{delta:+.0f}）"
+    return f"{label} {old_text}→{new_text}"
+
+
+def _field_equal(old_value, new_value):
+    try:
+        return abs(float(old_value) - float(new_value)) < 1e-9
+    except Exception:
+        return str(old_value or "") == str(new_value or "")
+
+
+def _record_summary(r):
+    if not r:
+        return ""
+    if r.get("type") in {"stock", "lof"}:
+        return f"份额 {_fmt_num(r.get('shares'), 0)}；成本 {_fmt_num(r.get('cost'))}"
+    return f"市值 {_fmt_num(r.get('market_value'), 2)}；收益 {_fmt_num(r.get('profit'), 2)}"
+
+
+def _record_changes(old, now):
+    labels = {
+        "name": "名称",
+        "shares": "份额",
+        "cost": "成本",
+        "market_value": "市值",
+        "profit": "收益",
+    }
+    fields = ["name", "shares", "cost"] if now.get("type") in {"stock", "lof"} else ["name", "market_value", "profit"]
+    parts = []
+    for field in fields:
+        if _field_equal(old.get(field), now.get(field)):
+            continue
+        if field == "name":
+            parts.append(f"名称 {old.get(field, '')}→{now.get(field, '')}")
+        else:
+            parts.append(_change_text(labels[field], old.get(field, 0), now.get(field, 0), field=field))
+    return "；".join(parts)
+
+
 def diff_records(current, proposed):
     current = strip_import_metadata(current)
     proposed = strip_import_metadata(proposed)
@@ -248,25 +309,28 @@ def diff_records(current, proposed):
         old = cur.get(key)
         now = new.get(key)
         if old and not now:
-            action = "将删除"
+            action = "删除"
             name = old.get("name", "")
+            detail = f"删除：{_record_summary(old)}"
         elif now and not old:
-            action = "将新增"
+            action = "新增"
             name = now.get("name", "")
+            detail = f"新增：{_record_summary(now)}"
         elif old == now:
             action = "不变"
             name = now.get("name", "")
+            detail = ""
         else:
-            action = "将修改"
+            action = "更新"
             name = now.get("name", "")
+            detail = _record_changes(old, now)
         rows.append({
             "操作": action,
             "账户": key[0],
             "类型": key[1],
             "代码": key[2],
             "名称": name,
-            "原记录": old or "",
-            "新记录": now or "",
+            "变化明细": detail,
         })
     return rows
 
@@ -339,108 +403,24 @@ SAMPLE_JSON = """[
   {"account":"支付宝","type":"otc","name":"某场外基金","code":"012345","market_value":12345.67,"profit":123.45}
 ]"""
 
-SAMPLE_CSV = """account,type,name,code,cost,shares,market_value,profit
-东方财富,stock,中芯国际,688981,85.30,100,,
-支付宝,otc,某场外基金,012345,,,12345.67,123.45
+SAMPLE_CSV = """name,code,shares,cost
+中芯国际,688981,100,85.30
+某场外基金,012345,1000,1.234
 """
 
-EASTMONEY_SCREENSHOT_SAMPLE_JSON = """[
-  {"account":"东方财富","type":"stock","name":"示例股票A","code":"600000","shares":100,"available":100,"current_price":12.340,"cost":10.000,"market_value":1234.00,"profit":234.00,"profit_rate":"23.40%","confidence":"高","source":"东方财富A股持仓截图"},
-  {"account":"东方财富","type":"stock","name":"示例股票B","code":"000001","shares":200,"available":200,"current_price":8.880,"cost":9.500,"market_value":1776.00,"profit":-124.00,"profit_rate":"-6.53%","confidence":"高","source":"东方财富A股持仓截图"}
-]"""
+EASTMONEY_SCREENSHOT_SAMPLE_JSON = SAMPLE_CSV
+GALAXY_LOF_SCREENSHOT_SAMPLE_JSON = SAMPLE_CSV
+ALIPAY_OTC_SCREENSHOT_SAMPLE_JSON = SAMPLE_CSV
 
-GALAXY_LOF_SCREENSHOT_SAMPLE_JSON = """[
-  {"account":"银河证券","type":"lof","name":"示例ETF","code":"510300","shares":1000,"available":1000,"cost":3.500,"current_price":3.600,"market_value":3600.00,"profit":100.00,"profit_rate":"2.86%","confidence":"高","source":"银河场内基金持仓截图"},
-  {"account":"银河证券","type":"lof","name":"示例LOF","code":"160000","shares":500,"available":500,"cost":1.200,"current_price":1.150,"market_value":575.00,"profit":-25.00,"profit_rate":"-4.17%","confidence":"高","source":"银河场内基金持仓截图"}
-]"""
-
-ALIPAY_OTC_SCREENSHOT_SAMPLE_JSON = """[
-  {"account":"支付宝","type":"otc","name":"示例场外基金A","code":"012345","market_value":10000.00,"profit":800.00,"daily_profit":50.00,"daily_rate":"0.50%","board":"示例板块","board_change":"1.20%","profit_rate":"8.00%","confidence":"高","source":"支付宝场外基金持仓截图"},
-  {"account":"支付宝","type":"otc","name":"示例场外基金B","code":"023456","market_value":5000.00,"profit":-200.00,"daily_profit":-30.00,"daily_rate":"-0.60%","board":"示例板块","board_change":"-0.80%","profit_rate":"-4.00%","confidence":"高","source":"支付宝场外基金持仓截图"}
-]"""
-
-VISION_PROMPT_EASTMONEY_A_STOCK = """你是一个持仓截图识别助手。请从东方财富 A 股持仓截图中提取持仓，输出严格 JSON 数组，不要输出解释文字。
-
-截图列含义通常为：
-- 股票/市值：第一行是股票名称，第二行是该股票市值。
-- 持仓/可用：第一行是持仓数量，第二行是可用数量。
-- 现价/成本：第一行是现价，第二行是成本价。
-- 持仓盈亏比：第一行是持仓盈亏金额，第二行是持仓盈亏率。
-
-输出字段：
-account 固定为 "东方财富"
-type 固定为 "stock"
-name 股票名称
-code 股票代码；截图若没有代码，请根据当前持仓名称匹配；无法确定时填空字符串
-shares 持仓数量
-available 可用数量
-current_price 现价
-cost 成本价
-market_value 市值
-profit 持仓盈亏金额
-profit_rate 持仓盈亏率字符串
-confidence 高/中/低
-source 固定为 "东方财富A股持仓截图"
-
-注意：
-- 不要猜测不在截图中且无法从当前持仓匹配的代码。
-- 红色数字是盈利，绿色数字是亏损，绿色负号必须保留。
-- 输出必须能被 json.loads 直接解析。
+FOUR_COLUMN_OCR_PROMPT = """识别这张券商/基金持仓截图，输出CSV，只输出CSV内容，不要任何解释、不要代码块符号：
+第一行固定表头：name,code,shares,cost
+name列：标的简称，去掉换行写成一行
+code列：6位代码
+shares列：持仓份额或股数（取"持仓/持股"那列）
+cost列：单位成本价（取"成本"那列）
+重要：同一个code若出现多行，必须合并成一行——shares相加，cost按份额加权平均后保留3位小数
 """
 
-VISION_PROMPT_GALAXY_LOF = """你是一个持仓截图识别助手。请从银河证券“我的场内资产/持仓明细”截图中提取场内基金或 LOF 持仓，输出严格 JSON 数组，不要输出解释文字。
-
-截图列含义通常为：
-- 名称/市值：第一行是基金名称和代码，下面是市值。
-- 参考盈亏：第一行是参考盈亏金额，第二行是盈亏率。
-- 持仓/可用：第一行是持仓份额，第二行是可用份额。
-- 成本/现价：第一行是成本价，第二行是现价。
-
-输出字段：
-account 固定为 "银河证券"
-type 固定为 "lof"
-name 基金名称
-code 基金代码
-shares 持仓份额
-available 可用份额
-cost 成本价
-current_price 现价
-market_value 市值
-profit 参考盈亏金额
-profit_rate 盈亏率字符串
-confidence 高/中/低
-source 固定为 "银河场内基金持仓截图"
-
-注意：
-- 如果截图中同一代码出现多行，不要擅自合并，逐行输出，并把 confidence 标为中，提示可能是分仓或重复行。
-- 绿色负数必须保留负号。
-- 输出必须能被 json.loads 直接解析。
-"""
-
-VISION_PROMPT_ALIPAY_OTC = """你是一个持仓截图识别助手。请从支付宝基金持仓截图中提取场外基金持仓，输出严格 JSON 数组，不要输出解释文字。
-
-截图列含义通常为：
-- 左侧：基金名称和基金代码。
-- 当日收益：第一行是当日收益金额，第二行是当日收益率。
-- 关联板块：第一行是板块涨跌幅，第二行是板块名称。
-- 持有收益：第一行是累计持有收益金额，第二行是累计收益率。
-
-输出字段：
-account 固定为 "支付宝"
-type 固定为 "otc"
-name 基金名称，截图省略号时尽量根据代码和当前持仓匹配完整名称
-code 基金代码
-profit 累计持有收益金额
-daily_profit 当日收益金额
-daily_rate 当日收益率字符串
-board 关联板块名称
-board_change 关联板块涨跌幅字符串
-profit_rate 累计收益率字符串
-confidence 高/中/低
-source 固定为 "支付宝场外基金持仓截图"
-
-注意：
-- 该截图通常没有每只基金市值。不要编造 market_value；留空即可，系统会沿用当前配置里的市值。
-- 截图底部露出不完整的行，confidence 标为低。
-- 输出必须能被 json.loads 直接解析。
-"""
+VISION_PROMPT_EASTMONEY_A_STOCK = FOUR_COLUMN_OCR_PROMPT
+VISION_PROMPT_GALAXY_LOF = FOUR_COLUMN_OCR_PROMPT
+VISION_PROMPT_ALIPAY_OTC = FOUR_COLUMN_OCR_PROMPT
