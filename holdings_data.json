@@ -1,46 +1,6 @@
 {
   "holdings": [
     {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "电网设备ETF华夏",
-      "code": "159326",
-      "cost": 2.083,
-      "shares": 1500.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "港美互联网LOF",
-      "code": "160644",
-      "cost": 1.662,
-      "shares": 9053.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "港股小盘LOF",
-      "code": "161124",
-      "cost": 1.054,
-      "shares": 2815.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "国投白银LOF",
-      "code": "161226",
-      "cost": 2.439,
-      "shares": 525.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "财通福享混合LOF",
-      "code": "501026",
-      "cost": 2.346,
-      "shares": 960.0
-    },
-    {
       "account": "东方财富",
       "type": "stock",
       "name": "株冶集团",
@@ -135,6 +95,46 @@
       "code": "018147",
       "market_value": 339.56,
       "profit": 19.38
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "电网设备ETF华夏",
+      "code": "159326",
+      "cost": 2.083,
+      "shares": 1500.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "港美互联网LOF",
+      "code": "160644",
+      "cost": 1.662,
+      "shares": 9053.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "港股小盘LOF",
+      "code": "161124",
+      "cost": 1.054,
+      "shares": 2815.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "国投白银LOF",
+      "code": "161226",
+      "cost": 2.439,
+      "shares": 525.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "财通福享混合LOF",
+      "code": "501026",
+      "cost": 2.346,
+      "shares": 960.0
     }
   ],
   "board_map": {
