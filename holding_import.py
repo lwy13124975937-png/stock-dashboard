@@ -12,6 +12,7 @@ from project_paths import BACKUP_DIR, HOLDINGS_DATA_FILE
 
 REQUIRED_COMMON = {"account", "type", "name", "code"}
 VALID_TYPES = {"stock", "lof", "otc"}
+POSITION_TYPES = {"stock", "lof", "otc"}
 IMPORT_META_FIELDS = {
     "confidence", "current_price", "market_value", "profit", "profit_rate",
     "available", "source", "daily_profit", "daily_rate", "board", "board_change"
@@ -90,7 +91,7 @@ def normalize_records(records, fill_from_current=True, default_account=None, def
             }
             if item["type"] not in VALID_TYPES:
                 raise ValueError("type 只能是 stock / lof / otc")
-            if item["type"] in {"stock", "lof"}:
+            if item["type"] in POSITION_TYPES:
                 item["cost"] = to_float(r.get("cost"), "cost")
                 item["shares"] = to_float(r.get("shares"), "shares")
             else:
@@ -120,7 +121,7 @@ def strip_import_metadata(records):
             "name": r["name"],
             "code": r["code"],
         }
-        if r["type"] in {"stock", "lof"}:
+        if r["type"] in {"stock", "lof"} or (r["type"] == "otc" and ("cost" in r or "shares" in r)):
             item["cost"] = float(r["cost"])
             item["shares"] = float(r["shares"])
         else:
@@ -140,8 +141,8 @@ def _duplicate_signature(r):
         str(r.get("type", "")),
         str(r.get("code", "")),
         str(r.get("name", "")),
-        float(r.get("shares", 0) or 0) if r.get("type") in {"stock", "lof"} else "",
-        float(r.get("cost", 0) or 0) if r.get("type") in {"stock", "lof"} else "",
+        float(r.get("shares", 0) or 0) if r.get("type") in POSITION_TYPES else "",
+        float(r.get("cost", 0) or 0) if r.get("type") in POSITION_TYPES else "",
         float(r.get("market_value", 0) or 0) if r.get("market_value") not in (None, "") else "",
         float(r.get("profit", 0) or 0) if r.get("profit") not in (None, "") else "",
     )
@@ -197,7 +198,7 @@ def consolidate_same_code(records):
                 consolidated.append(first)
             continue
 
-        if first.get("type") in {"stock", "lof"}:
+        if first.get("type") in POSITION_TYPES:
             total_shares = sum(float(r.get("shares", 0) or 0) for r in unique_rows)
             total_cost_amount = sum(float(r.get("cost", 0) or 0) * float(r.get("shares", 0) or 0) for r in unique_rows)
             merged = {
@@ -274,7 +275,7 @@ def _field_equal(old_value, new_value):
 def _record_summary(r):
     if not r:
         return ""
-    if r.get("type") in {"stock", "lof"}:
+    if r.get("type") in POSITION_TYPES and r.get("shares") not in (None, ""):
         return f"份额 {_fmt_num(r.get('shares'), 0)}；成本 {_fmt_num(r.get('cost'))}"
     return f"市值 {_fmt_num(r.get('market_value'), 2)}；收益 {_fmt_num(r.get('profit'), 2)}"
 
@@ -287,7 +288,7 @@ def _record_changes(old, now):
         "market_value": "市值",
         "profit": "收益",
     }
-    fields = ["name", "shares", "cost"] if now.get("type") in {"stock", "lof"} else ["name", "market_value", "profit"]
+    fields = ["name", "shares", "cost"] if now.get("type") in POSITION_TYPES and now.get("shares") not in (None, "") else ["name", "market_value", "profit"]
     parts = []
     for field in fields:
         if _field_equal(old.get(field), now.get(field)):
@@ -400,7 +401,7 @@ def display_records(records):
 
 SAMPLE_JSON = """[
   {"account":"东方财富","type":"stock","name":"中芯国际","code":"688981","cost":85.30,"shares":100},
-  {"account":"支付宝","type":"otc","name":"某场外基金","code":"012345","market_value":12345.67,"profit":123.45}
+  {"account":"支付宝","type":"otc","name":"某场外基金","code":"012345","cost":1.234,"shares":1000}
 ]"""
 
 SAMPLE_CSV = """name,code,shares,cost

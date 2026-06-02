@@ -61,6 +61,22 @@ def latest_close(code, is_fund):
     return float(row["close"]), str(row["date"].date())
 
 
+def latest_otc_nav(code):
+    df = retry(lambda: ak.fund_open_fund_info_em(symbol=str(code), indicator="单位净值走势"))
+    if df is None or len(df) == 0:
+        raise RuntimeError(f"场外基金净值无数据：{code}")
+    date_col = "净值日期" if "净值日期" in df.columns else df.columns[0]
+    nav_col = "单位净值" if "单位净值" in df.columns else df.columns[1]
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[nav_col] = pd.to_numeric(df[nav_col], errors="coerce")
+    df = df.dropna(subset=[date_col, nav_col]).sort_values(date_col)
+    if len(df) == 0:
+        raise RuntimeError(f"场外基金净值为空：{code}")
+    row = df.iloc[-1]
+    return float(row[nav_col]), str(row[date_col].date())
+
+
 def latest_hs300():
     df = retry(lambda: ak.stock_zh_index_daily(symbol="sh000300"))
     if df is None or len(df) == 0:
@@ -78,9 +94,22 @@ def account_totals():
         acc = h.get("account", "")
         totals.setdefault(acc, {"mv": 0.0, "cost": 0.0})
         if h.get("type") == "otc":
-            mv = float(h.get("market_value", 0) or 0)
-            profit = float(h.get("profit", 0) or 0)
-            cost = mv - profit
+            shares = float(h.get("shares", 0) or 0)
+            cost_price = float(h.get("cost", 0) or 0)
+            if shares > 0 and cost_price > 0:
+                try:
+                    nav, data_date = latest_otc_nav(h["code"])
+                    latest_dates.append(data_date)
+                    mv = nav * shares
+                    cost = cost_price * shares
+                except Exception:
+                    mv = float(h.get("market_value", 0) or 0)
+                    profit = float(h.get("profit", 0) or 0)
+                    cost = mv - profit
+            else:
+                mv = float(h.get("market_value", 0) or 0)
+                profit = float(h.get("profit", 0) or 0)
+                cost = mv - profit
         else:
             close, data_date = latest_close(h["code"], h.get("type") == "lof")
             latest_dates.append(data_date)

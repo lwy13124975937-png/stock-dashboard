@@ -275,21 +275,30 @@ def to_num(x):
 
 def fmt_money(v):
     try:
-        return f"{float(v):,.0f} 元"
+        n = float(v)
+        if pd.isna(n):
+            return "—"
+        return f"{n:,.0f} 元"
     except Exception:
         return "—"
 
 
 def fmt_price(v):
     try:
-        return f"{float(v):.3f}"
+        n = float(v)
+        if pd.isna(n):
+            return "—"
+        return f"{n:.3f}"
     except Exception:
         return "—"
 
 
 def fmt_pct(v):
     try:
-        return f"{float(v):.1f}%"
+        n = float(v)
+        if pd.isna(n):
+            return "—"
+        return f"{n:.1f}%"
     except Exception:
         return "—"
 
@@ -313,6 +322,8 @@ def esc(x):
 def value_html(v, suffix="", signed=False):
     try:
         n = float(v)
+        if pd.isna(n):
+            return "—"
         text = f"{n:+,.0f}{suffix}" if signed else f"{n:,.0f}{suffix}"
         return f'<span class="{cls(n)}">{esc(text)}</span>'
     except Exception:
@@ -681,6 +692,25 @@ def otc_nav(code):
     return None
 
 
+def latest_otc_quote(code):
+    df = otc_nav(str(code))
+    if df is None or len(df) == 0:
+        return float("nan"), "", "净值暂未获取：接口无返回"
+    try:
+        data = df.copy()
+        date_col = "净值日期" if "净值日期" in data.columns else data.columns[0]
+        nav_col = "单位净值" if "单位净值" in data.columns else data.columns[1]
+        data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
+        data[nav_col] = pd.to_numeric(data[nav_col], errors="coerce")
+        data = data.dropna(subset=[date_col, nav_col]).sort_values(date_col)
+        if len(data) == 0:
+            return float("nan"), "", "净值暂未获取：返回数据为空"
+        row = data.iloc[-1]
+        return float(row[nav_col]), str(row[date_col].date()), ""
+    except Exception as e:
+        return float("nan"), "", f"净值暂未获取：{str(e)[:60]}"
+
+
 @st.cache_data(ttl=600)
 def boards_live():
     for i in range(4):
@@ -915,12 +945,42 @@ def compute():
         r = dict(h)
         try:
             if h["type"] == "otc":
-                r["市值"] = h["market_value"]
-                r["盈亏"] = h["profit"]
-                r["成本额"] = h["market_value"] - h["profit"]
+                shares = float(h.get("shares", 0) or 0)
+                cost_price = float(h.get("cost", 0) or 0)
+                nav, nav_date, nav_error = latest_otc_quote(h["code"])
+                r["现价"] = nav
+                r["数据日期"] = nav_date or "净值暂未获取"
+                r["净值状态"] = nav_error or "已按最新单位净值自动计算"
+                if shares > 0 and cost_price > 0:
+                    r["成本额"] = cost_price * shares
+                    if pd.notna(nav):
+                        r["市值"] = nav * shares
+                        r["盈亏"] = (nav - cost_price) * shares
+                    else:
+                        fallback_mv = h.get("market_value")
+                        fallback_profit = h.get("profit")
+                        if fallback_mv not in (None, ""):
+                            r["市值"] = float(fallback_mv)
+                            r["盈亏"] = float(fallback_profit or 0)
+                            r["净值状态"] = f"{nav_error}，暂用上次保存市值"
+                        else:
+                            r["市值"] = float("nan")
+                            r["盈亏"] = float("nan")
+                    r["今日估算盈亏"] = 0.0
+                else:
+                    fallback_mv = h.get("market_value")
+                    fallback_profit = h.get("profit")
+                    if fallback_mv not in (None, ""):
+                        r["市值"] = float(fallback_mv)
+                        r["盈亏"] = float(fallback_profit or 0)
+                        r["成本额"] = r["市值"] - r["盈亏"]
+                        r["净值状态"] = "请在高级功能的持仓管理里改为“份额+成本单价”；当前暂用旧手填值"
+                    else:
+                        r["市值"] = float("nan")
+                        r["盈亏"] = float("nan")
+                        r["成本额"] = float("nan")
+                        r["净值状态"] = "请在持仓管理填写份额和成本单价"
                 r["今日估算盈亏"] = 0.0
-                r["现价"] = float("nan")
-                r["数据日期"] = ""
             else:
                 hist = price_hist(h["code"], h["type"] == "lof")
                 p = float(hist.iloc[-1]["close"])
@@ -931,20 +991,21 @@ def compute():
                 r["盈亏"] = r["市值"] - r["成本额"]
                 r["今日估算盈亏"] = (p - prev) * h["shares"]
                 r["数据日期"] = str(hist.iloc[-1]["date"].date())
-            r["盈亏率"] = r["盈亏"] / r["成本额"] * 100 if r["成本额"] else 0
+            r["盈亏率"] = r["盈亏"] / r["成本额"] * 100 if pd.notna(r["成本额"]) and r["成本额"] else float("nan")
         except Exception as e:
             r["现价"] = float("nan")
-            r["市值"] = 0
-            r["盈亏"] = 0
-            r["成本额"] = 0
-            r["盈亏率"] = 0
-            r["今日估算盈亏"] = 0
+            r["市值"] = float("nan") if h.get("type") == "otc" else 0
+            r["盈亏"] = float("nan") if h.get("type") == "otc" else 0
+            r["成本额"] = float("nan") if h.get("type") == "otc" else 0
+            r["盈亏率"] = float("nan") if h.get("type") == "otc" else 0
+            r["今日估算盈亏"] = 0.0
             r["数据日期"] = ""
+            r["净值状态"] = f"净值暂未获取：{str(e)[:60]}" if h.get("type") == "otc" else ""
             r["错误"] = str(e)[:80]
         rows.append(r)
     cols = [
         "account", "type", "name", "code", "cost", "shares", "market_value", "profit",
-        "现价", "市值", "盈亏", "成本额", "盈亏率", "今日估算盈亏", "数据日期", "错误",
+        "现价", "市值", "盈亏", "成本额", "盈亏率", "今日估算盈亏", "数据日期", "净值状态", "错误",
     ]
     return pd.DataFrame(rows, columns=cols)
 
@@ -957,7 +1018,8 @@ def build_exposure(df, fund_map, live, recent_sentiment=None):
         tag, temp_board, note = resolve_holding_board(r, fund_map)
         if tag not in agg:
             agg[tag] = {"板块": tag, "温度板块": temp_board, "持仓市值": 0.0, "明细": [], "说明": []}
-        agg[tag]["持仓市值"] += float(r["市值"])
+        mv = float(r["市值"]) if pd.notna(r["市值"]) else 0.0
+        agg[tag]["持仓市值"] += mv
         agg[tag]["明细"].append(r["name"])
         if note:
             agg[tag]["说明"].append(note)
@@ -1102,23 +1164,28 @@ def daily_recap(exposure, total_mv):
 
 
 def holding_card(r, with_chart=False, otc=False):
-    pnl = float(r.get("盈亏", 0))
-    pnl_rate = float(r.get("盈亏率", 0))
+    pnl = float(r.get("盈亏", float("nan")))
+    pnl_rate = float(r.get("盈亏率", float("nan")))
+    nav_text = "净值暂未获取" if otc and pd.isna(r.get("现价")) else fmt_price(r.get("现价"))
+    pnl_text = "—" if pd.isna(pnl) else f"{pnl:+,.0f} 元"
+    pnl_rate_text = "—" if pd.isna(pnl_rate) else f"{pnl_rate:+.1f}%"
     st.markdown(
         f"""
         <div class="holding-card">
             <div class="holding-title">{esc(r.get('name', ''))}</div>
             <div class="holding-meta">{esc(r.get('code', ''))} ｜ {esc(r.get('数据日期', '') or '净值/行情日期待更新')}</div>
             <div class="kv-grid">
-                <div class="kv"><div class="kv-label">现价/净值</div><div class="kv-value">{fmt_price(r.get('现价')) if not otc else '—'}</div></div>
+                <div class="kv"><div class="kv-label">现价/净值</div><div class="kv-value">{esc(nav_text)}</div></div>
                 <div class="kv"><div class="kv-label">市值</div><div class="kv-value">{fmt_money(r.get('市值'))}</div></div>
-                <div class="kv"><div class="kv-label">盈亏</div><div class="kv-value {cls(pnl)}">{pnl:+,.0f} 元</div></div>
-                <div class="kv"><div class="kv-label">盈亏率</div><div class="kv-value {cls(pnl_rate)}">{pnl_rate:+.1f}%</div></div>
+                <div class="kv"><div class="kv-label">盈亏</div><div class="kv-value {cls(pnl)}">{pnl_text}</div></div>
+                <div class="kv"><div class="kv-label">盈亏率</div><div class="kv-value {cls(pnl_rate)}">{pnl_rate_text}</div></div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    if otc and r.get("净值状态") and r.get("净值状态") != "已按最新单位净值自动计算":
+        st.caption(str(r.get("净值状态")))
     if otc:
         nav = otc_nav(r["code"])
         if nav is not None and len(nav):
@@ -1207,7 +1274,7 @@ def holding_import_widget(template_name, key_prefix):
         render_diff_preview(diff_records(current, final_records))
         st.subheader("识别结果预览")
         st.dataframe(pd.DataFrame(display_records(proposed)), use_container_width=True, hide_index=True)
-        checked = st.checkbox("我已核对代码、数量、成本、市值和收益。", key=f"{key_prefix}_checked")
+        checked = st.checkbox("我已核对代码、数量/份额和成本。", key=f"{key_prefix}_checked")
         phrase = st.text_input("请输入：确认写入", key=f"{key_prefix}_phrase")
         if st.button("备份旧文件并写入 holdings_data.json", disabled=not (checked and phrase == "确认写入"), key=f"{key_prefix}_write"):
             try:
@@ -1238,9 +1305,11 @@ def clean_managed_record(raw):
         raise ValueError("名称不能为空")
     if not item["code"]:
         raise ValueError("代码不能为空")
-    if item["type"] in {"stock", "lof"}:
+    if item["type"] in {"stock", "lof", "otc"}:
         item["cost"] = float(raw.get("cost") or 0)
         item["shares"] = float(raw.get("shares") or 0)
+        if item["cost"] <= 0 or item["shares"] <= 0:
+            raise ValueError("成本价和持有份额必须大于 0")
     else:
         item["market_value"] = float(raw.get("market_value") or 0)
         item["profit"] = float(raw.get("profit") or 0)
@@ -1313,11 +1382,13 @@ def render_holding_manager():
                     name = c1.text_input("名称", value=str(r.get("name", "")), placeholder="例如：中芯国际")
                     code = c2.text_input("代码", value=str(r.get("code", "")), placeholder="例如：688981")
                     new_type = LABEL_TYPES[type_choice]
-                    if new_type in {"stock", "lof"}:
+                    if new_type in {"stock", "lof", "otc"}:
                         c3, c4 = st.columns(2)
                         cost = c3.number_input("成本价（每股/每份）", value=float(r.get("cost", 0) or 0), step=0.001, format="%.4f")
                         shares = c4.number_input("持有份额", value=float(r.get("shares", 0) or 0), step=1.0)
                         raw = {"account": acc, "type": new_type, "name": name, "code": code, "cost": cost, "shares": shares}
+                        if new_type == "otc" and r.get("market_value") not in (None, "") and r.get("shares") in (None, ""):
+                            st.caption("这只场外基金还是旧格式，请填入支付宝页面里的“持有份额”和“成本价”后保存。")
                     else:
                         c3, c4 = st.columns(2)
                         market_value = c3.number_input("当前市值（元）", value=float(r.get("market_value", 0) or 0), step=100.0)
@@ -1354,7 +1425,7 @@ def render_holding_manager():
                 name = c1.text_input("名称", placeholder="例如：中芯国际")
                 code = c2.text_input("代码", placeholder="例如：688981")
                 new_type = LABEL_TYPES[type_choice]
-                if new_type in {"stock", "lof"}:
+                if new_type in {"stock", "lof", "otc"}:
                     c3, c4 = st.columns(2)
                     cost = c3.number_input("成本价（每股/每份）", min_value=0.0, step=0.001, format="%.4f")
                     shares = c4.number_input("持有份额", min_value=0.0, step=1.0)
@@ -1464,9 +1535,9 @@ def render_holding_overview(df, snapshot_history):
 
     st.subheader("全部持仓简表")
     show = df.copy()
-    show["市值"] = show["市值"].map(lambda v: f"{v:,.0f}")
-    show["盈亏"] = show["盈亏"].map(lambda v: f"{v:+,.0f}")
-    show["盈亏率"] = show["盈亏率"].map(lambda v: f"{v:+.1f}%")
+    show["市值"] = show["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}")
+    show["盈亏"] = show["盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f}")
+    show["盈亏率"] = show["盈亏率"].map(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
     st.dataframe(
         show[["account", "name", "code", "市值", "盈亏", "盈亏率", "数据日期"]].rename(
             columns={"account": "账户", "name": "名称", "code": "代码"}
