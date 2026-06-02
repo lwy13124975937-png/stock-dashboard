@@ -326,6 +326,17 @@ BOARD_ALIASES = {
     "玻璃玻纤": "非金属材料",
 }
 
+TRUE_NON_A_FUND_CODES = {"012922", "018147", "160644", "161124"}
+FUND_BOARD_OVERRIDES = {
+    # These are domestic A-share themed funds. Keep the display semantic even
+    # when the penetration cache/database is missing or too granular.
+    "015789": ("军工装备", "军工装备"),
+    "022755": ("A股量化", "元件"),
+    "160221": ("有色金属", "小金属"),
+}
+MISSING_FUND_BOARD = "__FUND_PENETRATION_MISSING__"
+METAL_BOARDS = {"贵金属", "工业金属", "小金属", "能源金属"}
+
 ACCOUNT_KEYS = {
     "银河证券": "galaxy",
     "东方财富": "eastmoney",
@@ -832,7 +843,15 @@ def normalize_board_name(board):
 
 def valid_board_name(x):
     s = str(x or "").strip()
-    return s not in ("", "None", "nan") and not s.startswith("无")
+    return s not in ("", "None", "nan", MISSING_FUND_BOARD) and not s.startswith("无")
+
+
+def is_true_non_a_fund(code):
+    return clean_stock_code(code) in TRUE_NON_A_FUND_CODES
+
+
+def fund_board_override(code):
+    return FUND_BOARD_OVERRIDES.get(clean_stock_code(code))
 
 
 @st.cache_data(ttl=600)
@@ -1122,24 +1141,42 @@ def load_update_log():
 
 @st.cache_data(ttl=600)
 def load_fund_board_map():
-    mp = pd.DataFrame()
+    frames = []
     try:
         conn = sqlite3.connect(DB)
-        mp = pd.read_sql("SELECT code, main_board, detail FROM fund_board_map", conn)
+        frames.append(pd.read_sql("SELECT code, main_board, detail FROM fund_board_map", conn))
         conn.close()
     except Exception:
-        mp = pd.DataFrame()
-    if len(mp) == 0 and FUND_BOARD_MAP_FILE.exists():
+        pass
+    if FUND_BOARD_MAP_FILE.exists():
         try:
-            mp = pd.read_json(FUND_BOARD_MAP_FILE)
+            frames.append(pd.read_json(FUND_BOARD_MAP_FILE))
         except Exception:
-            mp = pd.DataFrame()
+            pass
     out = {}
-    for _, r in mp.iterrows():
-        out[str(r["code"])] = {
-            "main_board": str(r.get("main_board", "") or ""),
-            "detail": str(r.get("detail", "") or ""),
-        }
+    for mp in frames:
+        if mp is None or len(mp) == 0:
+            continue
+        for _, r in mp.iterrows():
+            code = clean_stock_code(r.get("code", ""))
+            if not code:
+                continue
+            candidate = {
+                "main_board": str(r.get("main_board", "") or ""),
+                "detail": str(r.get("detail", "") or ""),
+            }
+            existing = out.get(code)
+            candidate_valid = valid_board_name(normalize_board_name(candidate["main_board"]))
+            existing_valid = bool(existing and valid_board_name(normalize_board_name(existing.get("main_board"))))
+            if existing is None or candidate_valid or not existing_valid:
+                out[code] = candidate
+    for code, (display_board, temp_board) in FUND_BOARD_OVERRIDES.items():
+        existing = out.get(code, {})
+        if not valid_board_name(normalize_board_name(existing.get("main_board"))):
+            out[code] = {
+                "main_board": temp_board,
+                "detail": existing.get("detail", f"{display_board}：境内A股基金，使用本地板块兜底。"),
+            }
     return out
 
 
@@ -1283,26 +1320,44 @@ def build_recent_sentiment(history, min_days=3, window=5):
 
 
 def resolve_holding_board(r, fund_map):
-    base_tag, base_board = BOARD_MAP.get(r["code"], (r["name"], "None"))
+    code = clean_stock_code(r["code"])
+    base_tag, base_board = BOARD_MAP.get(code, (r["name"], "None"))
     note = ""
-    if r["type"] in ("otc", "lof") and r["code"] in fund_map:
-        fm = fund_map[r["code"]]
+    override = fund_board_override(code)
+    if override:
+        display_board, temp_board = override
+        fm = fund_map.get(code, {})
+        detail = str(fm.get("detail", "") or "").strip()
+        note = f"{r['name']}：境内A股基金，显示为{display_board}。" + (detail if detail else "")
+        return display_board, temp_board, note
+    if r["type"] in ("otc", "lof") and code in fund_map:
+        fm = fund_map[code]
         mb = normalize_board_name(fm["main_board"])
         detail = fm["detail"].strip()
         if valid_board_name(mb):
             note = f"{r['name']}：基金穿透主导板块={mb}。{detail}"
             return mb, mb, note
-        note = f"{r['name']}：基金穿透显示为境外/非A股或无A股主导板块。{detail}"
+        if is_true_non_a_fund(code):
+            note = f"{r['name']}：基金穿透显示为境外/非A股。{detail}"
+            if valid_board_name(base_board):
+                return base_tag, base_board, note
+            return base_tag, "None", note
+        note = f"{r['name']}：境内基金暂未取得足够A股穿透数据。{detail}"
         if valid_board_name(base_board):
             return base_tag, base_board, note
-        return base_tag, "None", note
+        return base_tag, MISSING_FUND_BOARD, note
     return base_tag, base_board, note
 
 
 def fund_is_foreign_or_non_a(code, fund_map):
-    fm = fund_map.get(str(code), {})
-    board = normalize_board_name(fm.get("main_board") or BOARD_MAP.get(str(code), ["", "None"])[1])
-    return (not valid_board_name(board)) or str(board).startswith("无")
+    code = clean_stock_code(code)
+    if code in TRUE_NON_A_FUND_CODES:
+        return True
+    if code in FUND_BOARD_OVERRIDES:
+        return False
+    fm = fund_map.get(code, {})
+    board = normalize_board_name(fm.get("main_board") or BOARD_MAP.get(code, ["", "None"])[1])
+    return str(board).startswith("无") and code in TRUE_NON_A_FUND_CODES
 
 
 @st.cache_data(ttl=600)
@@ -1415,10 +1470,21 @@ def build_exposure(df, fund_map, live, recent_sentiment=None):
         tb = info["温度板块"]
         row = live[live["板块"] == tb] if live is not None and tb != "None" else pd.DataFrame()
         score = float(row.iloc[0]["情绪温度分"]) if len(row) else float("nan")
-        label = str(row.iloc[0]["情绪标签"]) if len(row) else ("境外/非A股" if tb == "None" else "数据不足")
-        cred = str(row.iloc[0]["数据可信度"]) if len(row) else ("数据不足" if tb != "None" else "不适用")
+        if len(row):
+            label = str(row.iloc[0]["情绪标签"])
+            cred = str(row.iloc[0]["数据可信度"])
+        elif tb == "None":
+            label = "境外/非A股"
+            cred = "不适用"
+        elif tb == MISSING_FUND_BOARD:
+            label = "穿透暂缺"
+            cred = "数据不足"
+        else:
+            label = "数据不足"
+            cred = "数据不足"
         trend = str(row.iloc[0]["趋势箭头"]) if len(row) else "—"
         recent = recent_sentiment.get(tb, {})
+        recent_fallback = "境外/非A股" if tb == "None" else ("穿透暂缺" if tb == MISSING_FUND_BOARD else "历史不足")
         rows.append({
             "板块": info["板块"],
             "温度板块": tb,
@@ -1430,7 +1496,7 @@ def build_exposure(df, fund_map, live, recent_sentiment=None):
             "趋势": trend,
             "近期温度": recent.get("近期温度", float("nan")),
             "近期变化": recent.get("近期变化", float("nan")),
-            "近期情绪": recent.get("近期情绪", "境外/非A股" if tb == "None" else "历史不足"),
+            "近期情绪": recent.get("近期情绪", recent_fallback),
             "近期样本": recent.get("样本天数", 0),
             "明细": "、".join(info["明细"]),
             "说明": "；".join(info["说明"]),
@@ -1648,15 +1714,24 @@ def enrich_holding_estimates(show, fund_map):
             out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * true_nav_pct / 100
             out.at[idx, "当日收益说明"] = "最新净值日收益，非盘中估值"
         else:
-            out.at[idx, "当日收益说明"] = est_note
+            out.at[idx, "当日收益说明"] = "暂无估值"
     return out
 
 
 def board_display_for_row(r, fund_map, live):
+    code = clean_stock_code(r.get("code"))
     tag, temp_board, _ = resolve_holding_board(r, fund_map)
+    override = fund_board_override(code)
+    if override:
+        display_board, temp_board = override
+        detail = fund_map.get(code, {}).get("detail", "")
+        if display_board == "有色金属":
+            return display_board, weighted_board_change_from_detail(detail, live, METAL_BOARDS)
+        if display_board == "A股量化":
+            return display_board, weighted_board_change_from_detail(detail, live)
     board = temp_board if valid_board_name(temp_board) else tag
     if not valid_board_name(temp_board):
-        return "境外/非A股", float("nan")
+        return ("境外/非A股" if is_true_non_a_fund(code) else "暂无估值"), float("nan")
     if live is None or len(live) == 0 or "板块" not in live.columns:
         return board, float("nan")
     m = live[live["板块"] == temp_board]
@@ -1691,6 +1766,27 @@ def holding_update_meta(date_text):
         return f"{short} 已更新" if d.normalize() == today else short
     except Exception:
         return s
+
+
+def weighted_board_change_from_detail(detail, live, allowed_boards=None):
+    if live is None or len(live) == 0 or "板块" not in live.columns or not detail:
+        return float("nan")
+    total = 0.0
+    weighted = 0.0
+    for board, weight_text in re.findall(r"\(([^,()]+),\s*([0-9.]+)%\)", str(detail)):
+        board = normalize_board_name(board)
+        if allowed_boards and board not in allowed_boards:
+            continue
+        match = live[live["板块"] == board]
+        if len(match) == 0:
+            continue
+        change = to_num(match.iloc[0].get("涨跌幅", float("nan")))
+        if pd.isna(change):
+            continue
+        weight = float(weight_text)
+        weighted += change * weight
+        total += weight
+    return weighted / total if total else float("nan")
 
 
 def render_holdings_list(df, snapshot_history, fund_map, live):
@@ -2389,16 +2485,29 @@ def render_my_boards(exposure, fund_map, recent_note):
             code = str(holding.get("code", ""))
             if not code:
                 continue
+            clean_code = clean_stock_code(code)
             fm = fund_map.get(code, {})
             raw_board = fm.get("main_board") or BOARD_MAP.get(code, ["", "None"])[1]
             board = normalize_board_name(raw_board)
             detail = fm.get("detail", "")
-            is_foreign = str(board).startswith("无") or not valid_board_name(board)
+            override = fund_board_override(clean_code)
+            if override:
+                main_board = override[0]
+                note = "境内A股基金，根据前十大重仓估算。"
+            elif is_true_non_a_fund(clean_code):
+                main_board = "境外/非A股"
+                note = "该基金主要投资非A股市场，无法直接使用A股板块温度衡量；净值会按基金披露节奏滞后更新。"
+            elif valid_board_name(board):
+                main_board = board
+                note = "根据前十大重仓估算。"
+            else:
+                main_board = "穿透暂缺"
+                note = "这是境内基金，但暂时没有取得足够A股重仓穿透数据，先不做盘中估值。"
             fund_rows.append({
                 "基金": f"{holding['name']} {code}",
-                "主要板块": board if valid_board_name(board) else "境外/非A股",
+                "主要板块": main_board,
                 "估算占比": extract_weight_text(detail),
-                "说明": "该基金重仓非A股标的，无法映射A股板块。" if is_foreign else "根据前十大重仓估算。",
+                "说明": note,
                 "明细": detail,
             })
         if fund_rows:

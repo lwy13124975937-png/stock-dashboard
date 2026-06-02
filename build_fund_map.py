@@ -38,6 +38,11 @@ INDEX_TABLE = "ths_stock_board_index"
 A_SHARE_TABLE = "a_share_code_name"
 INDEX_CACHE_DAYS = 30
 MIN_A_SHARE_RATIO = 0.5
+TRUE_NON_A_FUND_CODES = {"012922", "018147", "160644", "161124"}
+FUND_MAIN_BOARD_OVERRIDES = {
+    "022755": "A股量化",
+    "160221": "有色金属",
+}
 
 BOARD_ALIASES = {
     "航天装备Ⅱ": "军工装备",
@@ -480,6 +485,7 @@ def main():
         mb, names = fund_main_board(code, board_index, a_share_names, conn)
         detail = "、".join(names) if names else ""
         if mb:
+            mb = FUND_MAIN_BOARD_OVERRIDES.get(code, mb)
             print(f"   -> 主导板块：{mb}")
             print(f"   详情：{detail}")
             conn.execute(
@@ -487,10 +493,11 @@ def main():
                 (code, mb, detail),
             )
         else:
-            print("   -> 无A股主导板块（QDII/海外/商品基金，或A股权重不足）")
+            empty_label = "无（境外/非A股）" if code in TRUE_NON_A_FUND_CODES else "无（穿透数据缺失）"
+            print(f"   -> {empty_label}（QDII/海外/商品基金，或A股权重不足/接口暂缺）")
             conn.execute(
                 "INSERT OR REPLACE INTO fund_board_map VALUES (?,?,?)",
-                (code, "无（境外/非A股）", detail),
+                (code, empty_label, detail),
             )
         conn.commit()
 
