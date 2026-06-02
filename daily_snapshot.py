@@ -22,6 +22,11 @@ from project_paths import BOARD_HEAT_HISTORY_FILE, HISTORY_DIR, SNAPSHOTS_FILE
 
 
 ACCOUNTS = ["银河证券", "东方财富", "支付宝"]
+ACCOUNT_KEYS = {
+    "银河证券": "galaxy",
+    "东方财富": "eastmoney",
+    "支付宝": "alipay",
+}
 
 
 def china_today():
@@ -34,6 +39,13 @@ def sina_stock(code):
 
 def sina_fund(code):
     return ("sh" if str(code).startswith(("5", "6")) else "sz") + str(code)
+
+
+def holding_snapshot_id(account, htype, code):
+    account_key = ACCOUNT_KEYS.get(str(account), re.sub(r"\W+", "_", str(account)).strip("_") or "account")
+    type_key = re.sub(r"\W+", "_", str(htype)).strip("_") or "asset"
+    code_key = re.sub(r"\W+", "_", str(code)).strip("_") or "code"
+    return f"{account_key}_{type_key}_{code_key}"
 
 
 def retry(fn, n=4, wait=2):
@@ -142,6 +154,7 @@ def latest_hs300():
 
 def account_totals():
     totals = {acc: {"mv": 0.0, "cost": 0.0} for acc in ACCOUNTS}
+    holding_totals = {}
     latest_dates = []
     for h in HOLDINGS:
         acc = h.get("account", "")
@@ -172,7 +185,18 @@ def account_totals():
             cost = cost_price * shares
         totals[acc]["mv"] += mv
         totals[acc]["cost"] += cost
-    return totals, max(latest_dates) if latest_dates else ""
+        hid = holding_snapshot_id(acc, h.get("type", ""), h.get("code", ""))
+        item = holding_totals.setdefault(hid, {
+            "account": acc,
+            "type": h.get("type", ""),
+            "code": h.get("code", ""),
+            "name": h.get("name", ""),
+            "mv": 0.0,
+            "cost": 0.0,
+        })
+        item["mv"] += mv
+        item["cost"] += cost
+    return totals, max(latest_dates) if latest_dates else "", holding_totals
 
 
 def rate(mv, cost):
@@ -180,7 +204,7 @@ def rate(mv, cost):
 
 
 def build_snapshot_row():
-    totals, quote_date = account_totals()
+    totals, quote_date, holding_totals = account_totals()
     hs300_close, hs300_date = latest_hs300()
     snapshot_date = hs300_date or quote_date or china_today()
     total_mv = sum(v["mv"] for v in totals.values())
@@ -208,6 +232,13 @@ def build_snapshot_row():
         row[f"{prefix}_cost"] = round(cost, 2)
         row[f"{prefix}_profit"] = round(mv - cost, 2)
         row[f"{prefix}_return_pct"] = round(rate(mv, cost), 4)
+    for hid, data in holding_totals.items():
+        mv = data["mv"]
+        cost = data["cost"]
+        row[f"holding_{hid}_mv"] = round(mv, 2)
+        row[f"holding_{hid}_cost"] = round(cost, 2)
+        row[f"holding_{hid}_profit"] = round(mv - cost, 2)
+        row[f"holding_{hid}_return_pct"] = round(rate(mv, cost), 4)
     return row
 
 

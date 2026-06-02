@@ -127,6 +127,8 @@ def strip_import_metadata(records):
         else:
             item["market_value"] = float(r["market_value"])
             item["profit"] = float(r["profit"])
+        if r.get("buy_date"):
+            item["buy_date"] = str(r.get("buy_date")).strip()
         clean.append(item)
     return clean
 
