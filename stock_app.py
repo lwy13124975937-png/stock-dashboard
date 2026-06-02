@@ -177,25 +177,60 @@ st.markdown(
     .holding-title { font-weight: 800; margin-bottom: 4px; }
     .holding-meta { color: var(--muted); font-size: 13px; }
     .holding-list-row {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 13px;
-        box-shadow: 0 5px 16px rgba(15, 23, 42, .035);
-        padding: 10px 12px;
-        margin: 7px 0;
+        background: transparent;
+        border-bottom: 1px solid var(--line);
+        padding: 9px 0;
+        margin: 0;
     }
-    .holding-list-name { font-weight: 800; line-height: 1.25; }
-    .holding-list-meta { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.35; }
-    .holding-list-label { color: var(--muted); font-size: 11px; line-height: 1.15; }
-    .holding-list-value { font-weight: 800; margin-top: 3px; line-height: 1.18; word-break: break-word; }
-    .holding-subtotal {
-        background: #f8fafc;
-        border: 1px dashed var(--line);
-        border-radius: 12px;
-        padding: 8px 10px;
-        margin: 8px 0 14px;
+    .holding-list-name { font-weight: 800; line-height: 1.22; font-size: 15px; }
+    .holding-list-meta { color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.25; }
+    .holding-list-label { color: var(--muted); font-size: 12px; line-height: 1.15; text-align: right; }
+    .holding-list-value { font-weight: 800; margin-top: 3px; line-height: 1.18; word-break: break-word; text-align: right; font-size: 15px; }
+    .holding-list-sub { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.15; text-align: right; }
+    .holding-list-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(70px, .85fr) minmax(78px, .9fr) minmax(78px, .9fr);
+        gap: 7px;
         color: var(--muted);
         font-size: 13px;
+        font-weight: 700;
+        padding: 6px 0 8px;
+        border-bottom: 1px solid var(--line);
+    }
+    .holding-list-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(70px, .85fr) minmax(78px, .9fr) minmax(78px, .9fr);
+        gap: 7px;
+        align-items: center;
+    }
+    .holding-topbar {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+    .holding-topitem {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 9px 10px;
+        min-height: 58px;
+    }
+    .holding-toplabel { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .holding-topvalue { font-size: 19px; font-weight: 850; line-height: 1.15; }
+    .account-title {
+        font-size: 20px;
+        font-weight: 850;
+        margin: 14px 0 4px;
+        color: var(--text);
+    }
+    .holding-subtotal {
+        background: transparent;
+        border-bottom: 1px solid var(--line);
+        padding: 8px 0 13px;
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 12px;
     }
     .kv-grid {
         display: grid;
@@ -220,9 +255,15 @@ st.markdown(
         .score-cell { font-size: 12px; padding: 6px 7px; }
         .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .mini-row { grid-template-columns: 1.25fr .65fr .65fr .75fr; gap: 6px; font-size: 13px; }
-        .holding-list-row { padding: 9px 9px; }
-        .holding-list-value { font-size: 12px; }
-        .holding-list-label { font-size: 10px; }
+        .holding-list-head { grid-template-columns: minmax(0, 1.28fr) minmax(64px, .74fr) minmax(72px, .82fr) minmax(74px, .86fr); gap: 5px; font-size: 12px; }
+        .holding-list-grid { grid-template-columns: minmax(0, 1.28fr) minmax(64px, .74fr) minmax(72px, .82fr) minmax(74px, .86fr); gap: 5px; }
+        .holding-list-row { padding: 8px 0; }
+        .holding-list-name { font-size: 14px; }
+        .holding-list-meta, .holding-list-sub { font-size: 11px; }
+        .holding-list-label { font-size: 11px; }
+        .holding-list-value { font-size: 13px; }
+        .holding-topvalue { font-size: 17px; }
+        .account-title { font-size: 18px; margin: 12px 0 3px; }
     }
     </style>
     """,
@@ -291,6 +332,14 @@ def pct_text(v):
         return f"{n:.1f}%"
     except Exception:
         return "—"
+
+
+def china_today_date():
+    return pd.Timestamp(datetime.utcnow() + timedelta(hours=8)).normalize()
+
+
+def china_today_string():
+    return china_today_date().strftime("%Y-%m-%d")
 
 
 def clean_stock_code(code):
@@ -1263,7 +1312,7 @@ def compute():
                 r["当日收益率"] = float("nan")
                 r["当日收益说明"] = "境外无盘中估值" if is_foreign else "估值暂不可用"
                 true_nav_pct = otc_true_nav_change(h["code"], nav, nav_date)
-                today = datetime.now().strftime("%Y-%m-%d")
+                today = china_today_string()
                 if not is_foreign and pd.notna(nav) and str(nav_date) == today and pd.notna(true_nav_pct):
                     base_mv = r["市值"] if pd.notna(r["市值"]) else float(h.get("market_value", 0) or 0)
                     r["当日收益率"] = true_nav_pct
@@ -1578,18 +1627,33 @@ def board_display_for_row(r, fund_map, live):
 
 
 def render_value_block(label, value, sub="", tone="flat"):
+    label_html = f'<div class="holding-list-label">{esc(label)}</div>' if label else ""
     st.markdown(
         f"""
-        <div class="holding-list-label">{esc(label)}</div>
+        {label_html}
         <div class="holding-list-value {tone}">{esc(value)}</div>
-        <div class="holding-list-meta">{esc(sub)}</div>
+        <div class="holding-list-sub">{esc(sub)}</div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def holding_update_meta(date_text):
+    s = str(date_text or "").strip()
+    if not s or s in ("nan", "NaT", "None"):
+        return "—"
+    try:
+        d = pd.to_datetime(s, errors="coerce")
+        if pd.isna(d):
+            return s
+        today = china_today_date()
+        short = d.strftime("%m-%d")
+        return f"{short} 已更新" if d.normalize() == today else short
+    except Exception:
+        return s
+
+
 def render_holdings_list(df, snapshot_history, fund_map, live):
-    render_glossary(st, PAGE_TERMS["holding"])
     show = enrich_holding_estimates(aggregate_holdings_for_display(df), fund_map)
     if len(show) == 0:
         st.info("暂无持仓。")
@@ -1598,19 +1662,31 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
 
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
     total_today = pd.to_numeric(show["今日估算盈亏"], errors="coerce").sum()
-    c1, c2 = st.columns(2)
-    with c1:
-        card("三账户总市值", esc(fmt_money(total_mv)), "")
-    with c2:
-        card("三账户当日收益", value_html(total_today, " 元", signed=True), "场外基金盘中为估算或显示 —", cls(total_today))
+    st.markdown(
+        f"""
+        <div class="holding-topbar">
+            <div class="holding-topitem">
+                <div class="holding-toplabel">三账户总市值</div>
+                <div class="holding-topvalue">{esc(fmt_money(total_mv))}</div>
+            </div>
+            <div class="holding-topitem">
+                <div class="holding-toplabel">三账户当日收益</div>
+                <div class="holding-topvalue {cls(total_today)}">{esc(signed_money(total_today))}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    sort_c1, sort_c2, sort_c3 = st.columns([1, 1, 2])
-    if sort_c1.button("当日收益排序", key="sort_today_profit"):
+    sort_holding = st.columns([1.45, .85, .9, .9])
+    sort_holding[0].caption("名称 / 市值 / 日期")
+    if sort_holding[1].button("当日收益", key="sort_today_profit", help="点击切换升降序", type="tertiary"):
         current = st.session_state.get("holding_sort_by", "今日估算盈亏")
         st.session_state["holding_sort_desc"] = not st.session_state.get("holding_sort_desc", True) if current == "今日估算盈亏" else True
         st.session_state["holding_sort_by"] = "今日估算盈亏"
         st.rerun()
-    if sort_c2.button("持有收益排序", key="sort_hold_profit"):
+    sort_holding[2].caption("关联板块")
+    if sort_holding[3].button("持有收益", key="sort_hold_profit", help="点击切换升降序", type="tertiary"):
         current = st.session_state.get("holding_sort_by", "今日估算盈亏")
         st.session_state["holding_sort_desc"] = not st.session_state.get("holding_sort_desc", True) if current == "盈亏" else True
         st.session_state["holding_sort_by"] = "盈亏"
@@ -1625,26 +1701,26 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
         sub = show[show["account"] == account]
         if len(sub) == 0:
             continue
-        st.markdown(f"### {account}")
+        st.markdown(f'<div class="account-title">{esc(account)}</div>', unsafe_allow_html=True)
         for _, r in sub.iterrows():
             board, board_chg = board_display_for_row(r, fund_map, live)
-            with st.container(border=True):
-                cols = st.columns([2.1, 1, 1.1, 1])
-                with cols[0]:
-                    if st.button(str(r.get("name", "")), key=f"open_{r['detail_key']}", help="点开查看详情"):
-                        st.session_state["detail_code"] = str(r.get("code", ""))
-                        st.session_state["detail_key"] = r["detail_key"]
-                        st.rerun()
-                    status = "已更新" if r.get("数据日期") else "日期待更新"
-                    st.caption(f"市值 {fmt_money(r.get('市值'))}｜{r.get('数据日期') or '—'}｜{status}")
-                with cols[1]:
-                    day_sub = signed_pct(r.get("当日收益率")) if pd.notna(r.get("今日估算盈亏")) else str(r.get("当日收益说明", "—"))
-                    render_value_block("当日收益", signed_money(r.get("今日估算盈亏")), day_sub, cls(r.get("今日估算盈亏")))
-                with cols[2]:
-                    board_sub = signed_pct(board_chg) if pd.notna(board_chg) else "—"
-                    render_value_block("关联板块", str(board), board_sub, cls(board_chg))
-                with cols[3]:
-                    render_value_block("持有收益", signed_money(r.get("盈亏")), signed_pct(r.get("盈亏率")), cls(r.get("盈亏")))
+            day_sub = signed_pct(r.get("当日收益率")) if pd.notna(r.get("今日估算盈亏")) else str(r.get("当日收益说明", "—"))
+            board_sub = signed_pct(board_chg) if pd.notna(board_chg) else "—"
+            st.markdown('<div class="holding-list-row">', unsafe_allow_html=True)
+            cols = st.columns([1.45, .85, .9, .9])
+            with cols[0]:
+                if st.button(str(r.get("name", "")), key=f"open_{r['detail_key']}", help="点开查看详情", type="tertiary"):
+                    st.session_state["detail_code"] = str(r.get("code", ""))
+                    st.session_state["detail_key"] = r["detail_key"]
+                    st.rerun()
+                st.markdown(f'<div class="holding-list-meta">￥{float(r.get("市值", 0) or 0):,.0f}　{esc(holding_update_meta(r.get("数据日期")))}</div>', unsafe_allow_html=True)
+            with cols[1]:
+                render_value_block("", signed_money(r.get("今日估算盈亏")), day_sub, cls(r.get("今日估算盈亏")))
+            with cols[2]:
+                render_value_block("", str(board), board_sub, cls(board_chg))
+            with cols[3]:
+                render_value_block("", signed_money(r.get("盈亏")), signed_pct(r.get("盈亏率")), cls(r.get("盈亏")))
+            st.markdown('</div>', unsafe_allow_html=True)
         sub_mv = pd.to_numeric(sub["市值"], errors="coerce").sum()
         sub_today = pd.to_numeric(sub["今日估算盈亏"], errors="coerce").sum()
         sub_profit = pd.to_numeric(sub["盈亏"], errors="coerce").sum()
