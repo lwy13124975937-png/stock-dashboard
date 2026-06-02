@@ -692,10 +692,39 @@ def otc_nav(code):
     return None
 
 
-def latest_otc_quote(code):
+@st.cache_data(ttl=600)
+def eastmoney_otc_latest_nav(code):
+    """天天基金最新已公布净值。只取 dwjz，不使用盘中估值 gsz。"""
+    url = f"https://fundgz.1234567.com.cn/js/{str(code)}.js"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://fund.eastmoney.com/",
+    }
+    last = None
+    for i in range(3):
+        try:
+            resp = requests.get(url, headers=headers, params={"rt": int(time.time() * 1000)}, timeout=10)
+            resp.raise_for_status()
+            m = re.search(r"jsonpgz\((.*)\);?", resp.text.strip())
+            if not m:
+                raise RuntimeError("返回内容不是 JSONP")
+            data = json.loads(m.group(1))
+            nav = pd.to_numeric(data.get("dwjz"), errors="coerce")
+            nav_date = str(data.get("jzrq") or "").strip()
+            if pd.isna(nav) or not nav_date:
+                raise RuntimeError("缺少 dwjz 或 jzrq")
+            return float(nav), nav_date, ""
+        except Exception as e:
+            last = e
+            if i < 2:
+                time.sleep(1)
+    return float("nan"), "", f"天天基金最新净值接口失败：{str(last)[:60]}"
+
+
+def akshare_otc_latest_nav(code):
     df = otc_nav(str(code))
     if df is None or len(df) == 0:
-        return float("nan"), "", "净值暂未获取：接口无返回"
+        return float("nan"), "", "AkShare 净值接口无返回"
     try:
         data = df.copy()
         date_col = "净值日期" if "净值日期" in data.columns else data.columns[0]
@@ -704,11 +733,37 @@ def latest_otc_quote(code):
         data[nav_col] = pd.to_numeric(data[nav_col], errors="coerce")
         data = data.dropna(subset=[date_col, nav_col]).sort_values(date_col)
         if len(data) == 0:
-            return float("nan"), "", "净值暂未获取：返回数据为空"
+            return float("nan"), "", "AkShare 返回数据为空"
         row = data.iloc[-1]
         return float(row[nav_col]), str(row[date_col].date()), ""
     except Exception as e:
-        return float("nan"), "", f"净值暂未获取：{str(e)[:60]}"
+        return float("nan"), "", f"AkShare 净值解析失败：{str(e)[:60]}"
+
+
+def quote_date_key(date_text):
+    try:
+        dt = pd.to_datetime(date_text, errors="coerce")
+        return pd.Timestamp.min if pd.isna(dt) else dt
+    except Exception:
+        return pd.Timestamp.min
+
+
+def latest_otc_quote(code):
+    nav, nav_date, fast_error = eastmoney_otc_latest_nav(str(code))
+    ak_nav, ak_date, ak_error = akshare_otc_latest_nav(str(code))
+    candidates = []
+    if pd.notna(nav):
+        candidates.append(("天天基金", nav, nav_date))
+    if pd.notna(ak_nav):
+        candidates.append(("AkShare", ak_nav, ak_date))
+    if candidates:
+        source, best_nav, best_date = sorted(candidates, key=lambda x: quote_date_key(x[2]))[-1]
+        if source == "AkShare" and pd.notna(nav):
+            return best_nav, best_date, "天天基金净值日期较旧，已采用 AkShare 更新日期"
+        if source == "AkShare" and fast_error:
+            return best_nav, best_date, f"{fast_error}，已回退 AkShare 单位净值"
+        return best_nav, best_date, ""
+    return float("nan"), "", f"净值暂未获取：{fast_error}；{ak_error}"
 
 
 @st.cache_data(ttl=600)

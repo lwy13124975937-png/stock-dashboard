@@ -8,11 +8,14 @@ for v in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all
     os.environ.pop(v, None)
 os.environ["NO_PROXY"]="*"; os.environ["no_proxy"]="*"
 
+import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from my_holdings import HOLDINGS
 from project_paths import BOARD_HEAT_HISTORY_FILE, HISTORY_DIR, SNAPSHOTS_FILE
@@ -61,7 +64,29 @@ def latest_close(code, is_fund):
     return float(row["close"]), str(row["date"].date())
 
 
-def latest_otc_nav(code):
+def eastmoney_otc_latest_nav(code):
+    """天天基金最新已公布净值。只取 dwjz，不使用盘中估值 gsz。"""
+    url = f"https://fundgz.1234567.com.cn/js/{str(code)}.js"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://fund.eastmoney.com/",
+    }
+    def fetch():
+        resp = requests.get(url, headers=headers, params={"rt": int(time.time() * 1000)}, timeout=10)
+        resp.raise_for_status()
+        m = re.search(r"jsonpgz\((.*)\);?", resp.text.strip())
+        if not m:
+            raise RuntimeError("天天基金返回内容不是 JSONP")
+        data = json.loads(m.group(1))
+        nav = pd.to_numeric(data.get("dwjz"), errors="coerce")
+        nav_date = str(data.get("jzrq") or "").strip()
+        if pd.isna(nav) or not nav_date:
+            raise RuntimeError("天天基金缺少 dwjz 或 jzrq")
+        return float(nav), nav_date
+    return retry(fetch, n=3, wait=1)
+
+
+def akshare_otc_latest_nav(code):
     df = retry(lambda: ak.fund_open_fund_info_em(symbol=str(code), indicator="单位净值走势"))
     if df is None or len(df) == 0:
         raise RuntimeError(f"场外基金净值无数据：{code}")
@@ -75,6 +100,34 @@ def latest_otc_nav(code):
         raise RuntimeError(f"场外基金净值为空：{code}")
     row = df.iloc[-1]
     return float(row[nav_col]), str(row[date_col].date())
+
+
+def quote_date_key(date_text):
+    try:
+        dt = pd.to_datetime(date_text, errors="coerce")
+        return pd.Timestamp.min if pd.isna(dt) else dt
+    except Exception:
+        return pd.Timestamp.min
+
+
+def latest_otc_nav(code):
+    candidates = []
+    first_error = None
+    try:
+        nav, nav_date = eastmoney_otc_latest_nav(code)
+        candidates.append((nav, nav_date))
+    except Exception as e:
+        first_error = e
+    try:
+        nav, nav_date = akshare_otc_latest_nav(code)
+        candidates.append((nav, nav_date))
+    except Exception as e:
+        if not candidates:
+            raise first_error or e
+    if not candidates:
+        raise RuntimeError(f"场外基金净值无数据：{code}")
+    nav, nav_date = sorted(candidates, key=lambda x: quote_date_key(x[1]))[-1]
+    return nav, nav_date
 
 
 def latest_hs300():
