@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 import akshare as ak
 import pandas as pd
@@ -176,32 +177,71 @@ st.markdown(
     }
     .holding-title { font-weight: 800; margin-bottom: 4px; }
     .holding-meta { color: var(--muted); font-size: 13px; }
+    .holding-list-head,
     .holding-list-row {
-        background: transparent;
-        border-bottom: 1px solid var(--line);
-        padding: 9px 0;
-        margin: 0;
-    }
-    .holding-list-name { font-weight: 800; line-height: 1.22; font-size: 15px; }
-    .holding-list-meta { color: var(--muted); font-size: 12px; margin-top: 5px; line-height: 1.25; }
-    .holding-list-label { color: var(--muted); font-size: 12px; line-height: 1.15; text-align: right; }
-    .holding-list-value { font-weight: 800; margin-top: 3px; line-height: 1.18; word-break: break-word; text-align: right; font-size: 15px; }
-    .holding-list-sub { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.15; text-align: right; }
-    .holding-list-head {
         display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(70px, .85fr) minmax(78px, .9fr) minmax(78px, .9fr);
-        gap: 7px;
+        grid-template-columns: minmax(0, 1.36fr) minmax(58px, .72fr) minmax(66px, .8fr) minmax(68px, .82fr);
+        gap: 6px;
+        align-items: center;
+    }
+    .holding-list-head {
         color: var(--muted);
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 700;
         padding: 6px 0 8px;
         border-bottom: 1px solid var(--line);
     }
-    .holding-list-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(70px, .85fr) minmax(78px, .9fr) minmax(78px, .9fr);
-        gap: 7px;
-        align-items: center;
+    .holding-list-head > div,
+    .holding-list-head a {
+        min-width: 0;
+        text-align: right;
+        color: var(--muted) !important;
+        text-decoration: none !important;
+    }
+    .holding-list-head > div:first-child {
+        text-align: left;
+    }
+    .holding-list-row {
+        background: transparent;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 0;
+        margin: 0;
+    }
+    .holding-name-link {
+        display: block;
+        color: var(--text) !important;
+        text-decoration: none !important;
+        font-size: 15px;
+        font-weight: 850;
+        line-height: 1.22;
+        white-space: normal;
+        word-break: break-word;
+    }
+    .holding-list-meta {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 7px;
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+    .holding-cell {
+        min-width: 0;
+        text-align: right;
+    }
+    .holding-list-value {
+        font-weight: 850;
+        line-height: 1.15;
+        word-break: break-word;
+        text-align: right;
+        font-size: 14px;
+    }
+    .holding-list-sub {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+        line-height: 1.15;
+        text-align: right;
+        word-break: break-word;
     }
     .holding-topbar {
         display: grid;
@@ -255,12 +295,12 @@ st.markdown(
         .score-cell { font-size: 12px; padding: 6px 7px; }
         .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .mini-row { grid-template-columns: 1.25fr .65fr .65fr .75fr; gap: 6px; font-size: 13px; }
-        .holding-list-head { grid-template-columns: minmax(0, 1.28fr) minmax(64px, .74fr) minmax(72px, .82fr) minmax(74px, .86fr); gap: 5px; font-size: 12px; }
-        .holding-list-grid { grid-template-columns: minmax(0, 1.28fr) minmax(64px, .74fr) minmax(72px, .82fr) minmax(74px, .86fr); gap: 5px; }
-        .holding-list-row { padding: 8px 0; }
-        .holding-list-name { font-size: 14px; }
+        .holding-list-head,
+        .holding-list-row { grid-template-columns: minmax(0, 1.32fr) minmax(54px, .68fr) minmax(62px, .76fr) minmax(64px, .8fr); gap: 4px; }
+        .holding-list-head { font-size: 11px; }
+        .holding-list-row { padding: 9px 0; }
+        .holding-name-link { font-size: 14px; }
         .holding-list-meta, .holding-list-sub { font-size: 11px; }
-        .holding-list-label { font-size: 11px; }
         .holding-list-value { font-size: 13px; }
         .holding-topvalue { font-size: 17px; }
         .account-title { font-size: 18px; margin: 12px 0 3px; }
@@ -1678,19 +1718,27 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
         unsafe_allow_html=True,
     )
 
-    sort_holding = st.columns([1.45, .85, .9, .9])
-    sort_holding[0].caption("名称 / 市值 / 日期")
-    if sort_holding[1].button("当日收益", key="sort_today_profit", help="点击切换升降序", type="tertiary"):
-        current = st.session_state.get("holding_sort_by", "今日估算盈亏")
-        st.session_state["holding_sort_desc"] = not st.session_state.get("holding_sort_desc", True) if current == "今日估算盈亏" else True
-        st.session_state["holding_sort_by"] = "今日估算盈亏"
-        st.rerun()
-    sort_holding[2].caption("关联板块")
-    if sort_holding[3].button("持有收益", key="sort_hold_profit", help="点击切换升降序", type="tertiary"):
-        current = st.session_state.get("holding_sort_by", "今日估算盈亏")
-        st.session_state["holding_sort_desc"] = not st.session_state.get("holding_sort_desc", True) if current == "盈亏" else True
-        st.session_state["holding_sort_by"] = "盈亏"
-        st.rerun()
+    current_sort = st.session_state.get("holding_sort_by", "今日估算盈亏")
+    current_desc = st.session_state.get("holding_sort_desc", True)
+
+    def sort_href(sort_key):
+        next_desc = (not current_desc) if current_sort == sort_key else True
+        short = "today" if sort_key == "今日估算盈亏" else "profit"
+        return f"?page=holding&hold_sort={short}&hold_desc={'1' if next_desc else '0'}"
+
+    today_mark = " ↓" if current_sort == "今日估算盈亏" and current_desc else (" ↑" if current_sort == "今日估算盈亏" else "")
+    profit_mark = " ↓" if current_sort == "盈亏" and current_desc else (" ↑" if current_sort == "盈亏" else "")
+    st.markdown(
+        f"""
+        <div class="holding-list-head">
+            <div>名称 / 市值 / 日期</div>
+            <a href="{sort_href('今日估算盈亏')}">当日收益{esc(today_mark)}</a>
+            <div>关联板块</div>
+            <a href="{sort_href('盈亏')}">持有收益{esc(profit_mark)}</a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     sort_by = st.session_state.get("holding_sort_by", "account")
     sort_desc = st.session_state.get("holding_sort_desc", True)
     if sort_by in show.columns:
@@ -1702,25 +1750,38 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
         if len(sub) == 0:
             continue
         st.markdown(f'<div class="account-title">{esc(account)}</div>', unsafe_allow_html=True)
+        rows_html = []
         for _, r in sub.iterrows():
             board, board_chg = board_display_for_row(r, fund_map, live)
             day_sub = signed_pct(r.get("当日收益率")) if pd.notna(r.get("今日估算盈亏")) else str(r.get("当日收益说明", "—"))
             board_sub = signed_pct(board_chg) if pd.notna(board_chg) else "—"
-            st.markdown('<div class="holding-list-row">', unsafe_allow_html=True)
-            cols = st.columns([1.45, .85, .9, .9])
-            with cols[0]:
-                if st.button(str(r.get("name", "")), key=f"open_{r['detail_key']}", help="点开查看详情", type="tertiary"):
-                    st.session_state["detail_code"] = str(r.get("code", ""))
-                    st.session_state["detail_key"] = r["detail_key"]
-                    st.rerun()
-                st.markdown(f'<div class="holding-list-meta">￥{float(r.get("市值", 0) or 0):,.0f}　{esc(holding_update_meta(r.get("数据日期")))}</div>', unsafe_allow_html=True)
-            with cols[1]:
-                render_value_block("", signed_money(r.get("今日估算盈亏")), day_sub, cls(r.get("今日估算盈亏")))
-            with cols[2]:
-                render_value_block("", str(board), board_sub, cls(board_chg))
-            with cols[3]:
-                render_value_block("", signed_money(r.get("盈亏")), signed_pct(r.get("盈亏率")), cls(r.get("盈亏")))
-            st.markdown('</div>', unsafe_allow_html=True)
+            detail_href = (
+                f"?page=holding&detail_code={quote_plus(str(r.get('code', '')))}"
+                f"&detail_key={quote_plus(str(r.get('detail_key', '')))}"
+            )
+            rows_html.append(
+                f"""
+                <div class="holding-list-row">
+                    <div>
+                        <a class="holding-name-link" href="{detail_href}">{esc(r.get("name", ""))}</a>
+                        <div class="holding-list-meta">￥{float(r.get("市值", 0) or 0):,.0f}&nbsp;&nbsp;{esc(holding_update_meta(r.get("数据日期")))}</div>
+                    </div>
+                    <div class="holding-cell">
+                        <div class="holding-list-value {cls(r.get("今日估算盈亏"))}">{esc(signed_money(r.get("今日估算盈亏")))}</div>
+                        <div class="holding-list-sub">{esc(day_sub)}</div>
+                    </div>
+                    <div class="holding-cell">
+                        <div class="holding-list-value {cls(board_chg)}">{esc(str(board))}</div>
+                        <div class="holding-list-sub">{esc(board_sub)}</div>
+                    </div>
+                    <div class="holding-cell">
+                        <div class="holding-list-value {cls(r.get("盈亏"))}">{esc(signed_money(r.get("盈亏")))}</div>
+                        <div class="holding-list-sub">{esc(signed_pct(r.get("盈亏率")))}</div>
+                    </div>
+                </div>
+                """
+            )
+        st.markdown("".join(rows_html), unsafe_allow_html=True)
         sub_mv = pd.to_numeric(sub["市值"], errors="coerce").sum()
         sub_today = pd.to_numeric(sub["今日估算盈亏"], errors="coerce").sum()
         sub_profit = pd.to_numeric(sub["盈亏"], errors="coerce").sum()
@@ -1822,12 +1883,18 @@ def render_holding_detail(df, snapshot_history, fund_map, live, board_history):
     if len(match) == 0:
         st.session_state.pop("detail_code", None)
         st.session_state.pop("detail_key", None)
+        st.session_state["main_page"] = "持仓"
         st.warning("这只持仓暂时找不到，已返回列表。")
         st.rerun()
     r = match.iloc[0]
     if st.button("← 返回", key="back_to_holding_list"):
         st.session_state.pop("detail_code", None)
         st.session_state.pop("detail_key", None)
+        st.session_state["main_page"] = "持仓"
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
         st.rerun()
     st.subheader(f"{r['name']}（{r['code']}）")
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
@@ -2406,14 +2473,41 @@ except Exception as e:
 
 exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
 
+try:
+    query = st.query_params
+    should_clear_query = False
+    if query.get("page") == "holding":
+        st.session_state["main_page"] = "持仓"
+        should_clear_query = True
+    if query.get("detail_code"):
+        st.session_state["main_page"] = "持仓"
+        st.session_state["detail_code"] = str(query.get("detail_code", ""))
+        st.session_state["detail_key"] = str(query.get("detail_key", ""))
+        should_clear_query = True
+    if query.get("hold_sort"):
+        st.session_state["main_page"] = "持仓"
+        sort_map = {"today": "今日估算盈亏", "profit": "盈亏"}
+        sort_key = sort_map.get(str(query.get("hold_sort")))
+        if sort_key:
+            st.session_state["holding_sort_by"] = sort_key
+            st.session_state["holding_sort_desc"] = str(query.get("hold_desc", "1")) == "1"
+        should_clear_query = True
+    if should_clear_query:
+        st.query_params.clear()
+except Exception:
+    pass
+
 st.title("我的全资产管理台")
 
+page_options = ["首页", "持仓", "板块雷达", "我的板块", "高级功能"]
+page_kwargs = {"default": "首页"} if "main_page" not in st.session_state else {}
 page = st.segmented_control(
     "页面",
-    ["首页", "持仓", "板块雷达", "我的板块", "高级功能"],
-    default="首页",
+    page_options,
     label_visibility="collapsed",
     width="stretch",
+    key="main_page",
+    **page_kwargs,
 )
 
 if page == "首页":
