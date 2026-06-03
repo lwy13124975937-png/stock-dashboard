@@ -21,6 +21,13 @@ import requests
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from alipay_json_import import (
+    ALIPAY_JSON_PROMPT,
+    alipay_code_options,
+    build_alipay_preview,
+    match_alipay_code,
+    parse_alipay_json,
+)
 from holding_import import (
     ALIPAY_OTC_SCREENSHOT_SAMPLE_JSON,
     EASTMONEY_SCREENSHOT_SAMPLE_JSON,
@@ -2170,6 +2177,120 @@ def handle_holdings_save_result(backup, sync_ok, sync_msg):
         st.rerun()
 
 
+def _alipay_code_label(code, options):
+    if not code:
+        return "请选择代码"
+    for opt in options:
+        if opt["code"] == code:
+            return f"{code}｜{opt.get('name', '')}"
+    return code
+
+
+def _render_alipay_preview_table(rows):
+    if not rows:
+        st.info("还没有可预览的记录。")
+        return
+    df = pd.DataFrame(rows)
+
+    def _shade(row):
+        if row.get("是否可写入") == "否":
+            return ["background-color: #fee2e2"] * len(row)
+        if "可能是昨日数据" in str(row.get("提示", "")):
+            return ["background-color: #fff7ed"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(df.style.apply(_shade, axis=1), use_container_width=True, hide_index=True)
+
+
+def render_alipay_json_sync(records):
+    st.markdown("#### 支付宝 JSON 自动同步")
+    st.caption("请粘完整的支付宝场外基金持仓列表。确认写入后，只替换支付宝场外基金，不影响银河、东方财富。")
+
+    with st.expander("📷 怎么获取JSON？点开看步骤", expanded=False):
+        st.write("① 截图支付宝/养基宝『我的持有』页面 → ② 发给任意能读图的AI，并复制下面这段提示词一起发 → ③ 把AI返回的JSON粘到下方框 → ④ 点解析并同步")
+        st.code(ALIPAY_JSON_PROMPT, language=None)
+
+    raw_key = "alipay_json_raw"
+    items_key = "alipay_json_items"
+    st.session_state.setdefault(raw_key, "")
+
+    raw = st.text_area(
+        "粘贴持仓JSON",
+        height=150,
+        key=raw_key,
+        placeholder='例如：[{"name":"永赢高端装备智选混合A","share_class":"A","amount":15217.89,"profit":-3382.38,"profit_rate":-18.18,"account":"支付宝","today_updated":true}]',
+    )
+    if st.button("解析并同步", type="primary", key="alipay_json_parse"):
+        try:
+            items = parse_alipay_json(raw)
+            if not items:
+                st.session_state[items_key] = []
+                st.warning("没有解析到任何基金。")
+            else:
+                st.session_state[items_key] = items
+                st.success(f"已解析 {len(items)} 只基金，请先核对预览，确认后才会写入。")
+        except Exception as e:
+            st.session_state[items_key] = []
+            st.error(f"JSON 解析失败：{type(e).__name__}：{e}")
+
+    items = st.session_state.get(items_key, [])
+    if not items:
+        st.caption("提示：反推份额因金额已四舍五入到分，会与支付宝实际份额有零点几份微差，属正常。")
+        return
+
+    options = alipay_code_options(records)
+    option_codes = [""] + [opt["code"] for opt in options]
+    selected_codes = {}
+
+    st.subheader("代码匹配")
+    for idx, item in enumerate(items):
+        auto_code = match_alipay_code(item, records)
+        key = f"alipay_json_code_{idx}"
+        if key not in st.session_state:
+            st.session_state[key] = auto_code if auto_code in option_codes else ""
+        selected = st.selectbox(
+            f"{item.get('name', '')} 对应代码",
+            option_codes,
+            format_func=lambda c, opts=options: _alipay_code_label(c, opts),
+            key=key,
+        )
+        manual_code = st.text_input(
+            "如果上面没有这只基金，请手动填 6 位代码",
+            value="",
+            key=f"alipay_json_manual_code_{idx}",
+            placeholder="例如：015789",
+        ).strip()
+        selected_codes[idx] = manual_code or selected
+
+    with st.spinner("正在按净值反推份额和成本..."):
+        preview_rows, proposed = build_alipay_preview(items, records, selected_codes)
+
+    st.subheader("预览确认")
+    _render_alipay_preview_table(preview_rows)
+    st.caption("已知特性：反推份额因金额已四舍五入到分，会与支付宝实际份额有零点几份微差，属正常。")
+
+    invalid_rows = [r for r in preview_rows if r.get("是否可写入") != "是"]
+    if invalid_rows:
+        st.error("还有记录不能写入，请先手选代码或修正 JSON。")
+    final_records = merge_records(records, proposed, "replace_same_account_type") if proposed else records
+    with st.expander("差异预览", expanded=False):
+        render_diff_preview(diff_records(records, final_records))
+
+    checked = st.checkbox("我已核对代码、金额、收益、反推份额和成本", key="alipay_json_checked")
+    can_write = bool(proposed) and not invalid_rows and checked
+    if st.button("确认写入支付宝持仓", disabled=not can_write, key="alipay_json_write"):
+        try:
+            backup, sync_ok, sync_msg = save_managed_holdings(final_records)
+            if sync_ok:
+                st.session_state[items_key] = []
+                st.session_state[raw_key] = ""
+            handle_holdings_save_result(backup, sync_ok, sync_msg)
+        except Exception as e:
+            st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+            st.error(f"写入流程异常：{type(e).__name__}：{e}")
+            render_github_sync_diag(expanded=False)
+
+
 def render_holding_manager():
     st.subheader("持仓管理")
     st.caption("这里会直接写入 holdings_data.json，并在保存前自动备份上一版。")
@@ -2187,6 +2308,8 @@ def render_holding_manager():
     accounts = ["银河证券", "东方财富", "支付宝"]
     for acc in accounts:
         st.markdown(f"### {acc}")
+        if ACCOUNT_KEYS.get(acc) == "alipay":
+            render_alipay_json_sync(records)
         account_rows = [(i, r) for i, r in enumerate(records) if r.get("account") == acc]
         if not account_rows:
             st.caption("这个账户暂时没有持仓。")
