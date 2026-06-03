@@ -40,7 +40,7 @@ from holding_import import (
     write_holdings,
 )
 from my_holdings import load_holdings_data
-from nav_utils import classify_fund, get_nav, market_cache_key
+from nav_utils import calc_daily_return, classify_fund, get_nav, market_cache_key
 from project_paths import BOARD_HEAT_HISTORY_FILE, DB, FUND_BOARD_MAP_FILE, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
 from term_help import RISK_TIP, render_glossary, render_term, risk_notice
 
@@ -1414,18 +1414,19 @@ def compute(cache_key=None):
                         r["盈亏"] = float("nan")
                         r["成本额"] = float("nan")
                         r["净值状态"] = "请在持仓管理填写份额和成本单价"
-                r["当日收益率"] = float("nan")
-                r["今日估算盈亏"] = float("nan")
-                today = china_today_string()
-                if is_foreign:
+                day_amount, day_pct, day_status = calc_daily_return(nav_result, shares)
+                r["当日收益率"] = day_pct if day_pct is not None else float("nan")
+                r["今日估算盈亏"] = day_amount if day_amount is not None else float("nan")
+                if day_status == "待披露":
+                    r["当日收益说明"] = "待披露"
+                elif day_status == "份额缺失":
+                    r["当日收益说明"] = "份额缺失"
+                elif day_status in ("估", "真"):
+                    r["当日收益说明"] = "盘中估值" if day_status == "估" else "已公布真净值"
+                elif is_foreign:
                     r["当日收益说明"] = "QDII/境外净值披露滞后"
-                elif nav_result.kind in ("估", "真") and str(nav_date) == today and nav_result.change_pct is not None:
-                    base_mv = r["市值"] if pd.notna(r["市值"]) else float(h.get("market_value", 0) or 0)
-                    r["当日收益率"] = nav_result.change_pct
-                    r["今日估算盈亏"] = base_mv * nav_result.change_pct / 100
-                    r["当日收益说明"] = "盘中估值" if nav_result.kind == "估" else "已公布当日真净值"
-                elif not is_foreign:
-                    r["当日收益说明"] = "暂无当日估值"
+                else:
+                    r["当日收益说明"] = day_status or "暂无当日估值"
             else:
                 p = nav_result.nav
                 if p is None or pd.isna(p):
@@ -1434,8 +1435,9 @@ def compute(cache_key=None):
                 r["市值"] = p * float(h["shares"])
                 r["成本额"] = h["cost"] * h["shares"]
                 r["盈亏"] = r["市值"] - r["成本额"]
-                r["当日收益率"] = nav_result.change_pct if nav_result.change_pct is not None else float("nan")
-                r["今日估算盈亏"] = r["市值"] * r["当日收益率"] / 100 if pd.notna(r["当日收益率"]) else float("nan")
+                day_amount, day_pct, day_status = calc_daily_return(nav_result, h.get("shares", 0))
+                r["当日收益率"] = day_pct if day_pct is not None else float("nan")
+                r["今日估算盈亏"] = day_amount if day_amount is not None else float("nan")
                 r["当日收益说明"] = "新浪行情"
                 r["数据日期"] = nav_result.date
                 r["净值状态"] = nav_result.reason
@@ -1700,25 +1702,16 @@ def enrich_holding_estimates(show, fund_map):
     if show is None or len(show) == 0:
         return show
     out = show.copy()
-    today = china_today_string()
     for idx, r in out.iterrows():
         if r.get("type") != "otc" or pd.notna(r.get("今日估算盈亏")):
             continue
+        if float(r.get("shares", 0) or 0) <= 0:
+            out.at[idx, "当日收益说明"] = "份额缺失"
+            continue
         if fund_is_foreign_or_non_a(r.get("code"), fund_map):
-            out.at[idx, "当日收益说明"] = "QDII/境外净值披露滞后"
+            out.at[idx, "当日收益说明"] = "待披露"
             continue
-        true_nav_pct = otc_true_nav_change(r.get("code"), r.get("现价"), r.get("数据日期"))
-        if str(r.get("数据日期")) == today and pd.notna(true_nav_pct):
-            out.at[idx, "当日收益率"] = true_nav_pct
-            out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * true_nav_pct / 100
-            out.at[idx, "当日收益说明"] = "已公布当日真净值"
-            continue
-        if pd.notna(true_nav_pct):
-            out.at[idx, "当日收益率"] = true_nav_pct
-            out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * true_nav_pct / 100
-            out.at[idx, "当日收益说明"] = "最新净值日收益，非盘中估值"
-        else:
-            out.at[idx, "当日收益说明"] = "暂无估值"
+        out.at[idx, "当日收益说明"] = "待披露"
     return out
 
 
@@ -1801,7 +1794,7 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
         return
 
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
-    total_today = pd.to_numeric(show["今日估算盈亏"], errors="coerce").sum()
+    total_today = pd.to_numeric(show["今日估算盈亏"], errors="coerce").sum(min_count=1)
     st.markdown(
         f"""
         <div class="holding-topbar">
@@ -1883,7 +1876,7 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
             )
         st.markdown("".join(rows_html), unsafe_allow_html=True)
         sub_mv = pd.to_numeric(sub["市值"], errors="coerce").sum()
-        sub_today = pd.to_numeric(sub["今日估算盈亏"], errors="coerce").sum()
+        sub_today = pd.to_numeric(sub["今日估算盈亏"], errors="coerce").sum(min_count=1)
         sub_profit = pd.to_numeric(sub["盈亏"], errors="coerce").sum()
         st.markdown(
             f'<div class="holding-subtotal">{esc(account)} 小计：市值 {esc(fmt_money(sub_mv))} ｜ 当日 {esc(signed_money(sub_today))} ｜ 持有收益 {esc(signed_money(sub_profit))}</div>',
@@ -2285,7 +2278,7 @@ def render_home(df, exposure, board_source, snapshot_history):
     total_mv = df["市值"].sum()
     total_pnl = df["盈亏"].sum()
     total_cost = df["成本额"].sum()
-    today_pnl = df["今日估算盈亏"].sum()
+    today_pnl = pd.to_numeric(df["今日估算盈亏"], errors="coerce").sum(min_count=1)
     total_rate = total_pnl / total_cost * 100 if total_cost else 0
 
     c = st.columns(3)
