@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 optional/notify_config.json
 .streamlit/secrets.toml
+nav_cache.json

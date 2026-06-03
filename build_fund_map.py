@@ -38,7 +38,6 @@ INDEX_TABLE = "ths_stock_board_index"
 A_SHARE_TABLE = "a_share_code_name"
 INDEX_CACHE_DAYS = 30
 MIN_A_SHARE_RATIO = 0.5
-TRUE_NON_A_FUND_CODES = {"012922", "018147", "160644", "161124"}
 FUND_MAIN_BOARD_OVERRIDES = {
     "022755": "A股量化",
     "160221": "有色金属",
@@ -493,7 +492,12 @@ def main():
                 (code, mb, detail),
             )
         else:
-            empty_label = "无（境外/非A股）" if code in TRUE_NON_A_FUND_CODES else "无（穿透数据缺失）"
+            if not names:
+                empty_label = "无（穿透数据缺失）"
+            elif all("境外/非A股或未收录" in str(x) for x in names):
+                empty_label = "无（境外/非A股）"
+            else:
+                empty_label = "无（A股权重不足）"
             print(f"   -> {empty_label}（QDII/海外/商品基金，或A股权重不足/接口暂缺）")
             conn.execute(
                 "INSERT OR REPLACE INTO fund_board_map VALUES (?,?,?)",

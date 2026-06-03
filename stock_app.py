@@ -40,6 +40,7 @@ from holding_import import (
     write_holdings,
 )
 from my_holdings import load_holdings_data
+from nav_utils import classify_fund, get_nav, market_cache_key
 from project_paths import BOARD_HEAT_HISTORY_FILE, DB, FUND_BOARD_MAP_FILE, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
 from term_help import RISK_TIP, render_glossary, render_term, risk_notice
 
@@ -326,7 +327,6 @@ BOARD_ALIASES = {
     "玻璃玻纤": "非金属材料",
 }
 
-TRUE_NON_A_FUND_CODES = {"012922", "018147", "160644", "161124"}
 FUND_BOARD_OVERRIDES = {
     # These are domestic A-share themed funds. Keep the display semantic even
     # when the penetration cache/database is missing or too granular.
@@ -847,7 +847,8 @@ def valid_board_name(x):
 
 
 def is_true_non_a_fund(code):
-    return clean_stock_code(code) in TRUE_NON_A_FUND_CODES
+    kind, _ = classify_fund(clean_stock_code(code), "otc")
+    return kind == "场外基金-QDII/境外"
 
 
 def fund_board_override(code):
@@ -1337,7 +1338,7 @@ def resolve_holding_board(r, fund_map):
         if valid_board_name(mb):
             note = f"{r['name']}：基金穿透主导板块={mb}。{detail}"
             return mb, mb, note
-        if is_true_non_a_fund(code):
+        if fund_is_foreign_or_non_a(code, fund_map):
             note = f"{r['name']}：基金穿透显示为境外/非A股。{detail}"
             if valid_board_name(base_board):
                 return base_tag, base_board, note
@@ -1351,46 +1352,55 @@ def resolve_holding_board(r, fund_map):
 
 def fund_is_foreign_or_non_a(code, fund_map):
     code = clean_stock_code(code)
-    if code in TRUE_NON_A_FUND_CODES:
-        return True
     if code in FUND_BOARD_OVERRIDES:
         return False
+    kind, _ = classify_fund(code, "otc")
+    if kind == "场外基金-QDII/境外":
+        return True
     fm = fund_map.get(code, {})
     board = normalize_board_name(fm.get("main_board") or BOARD_MAP.get(code, ["", "None"])[1])
-    return str(board).startswith("无") and code in TRUE_NON_A_FUND_CODES
+    if str(board).startswith("无（境外/非A股"):
+        return True
+    return str(board).startswith("无") and kind == "场外基金-QDII/境外"
+
+
+@st.cache_data(ttl=300)
+def cached_get_nav(code, holding_type, name, cache_key):
+    return get_nav(code, holding_type, name, cache_key=cache_key)
 
 
 @st.cache_data(ttl=600)
-def compute():
+def compute(cache_key=None):
+    _ = cache_key
     fund_map_local = load_fund_board_map()
     rows = []
     for h in HOLDINGS:
         r = dict(h)
         try:
+            nav_result = cached_get_nav(h["code"], h.get("type", ""), h.get("name", ""), market_cache_key())
             if h["type"] == "otc":
                 shares = float(h.get("shares", 0) or 0)
                 cost_price = float(h.get("cost", 0) or 0)
-                nav, nav_date, nav_error = latest_otc_quote(h["code"])
-                is_foreign = fund_is_foreign_or_non_a(h["code"], fund_map_local)
+                nav = nav_result.nav
+                nav_date = nav_result.date
+                is_foreign = nav_result.classify == "场外基金-QDII/境外"
                 r["现价"] = nav
-                r["数据日期"] = nav_date or "净值暂未获取"
-                r["净值状态"] = nav_error or "已按最新单位净值自动计算"
+                r["数据日期"] = nav_date or "暂无数据"
+                if nav_result.nav is None:
+                    r["净值状态"] = f"暂无数据（接口失败）：{nav_result.reason}"
+                elif nav_result.cache:
+                    r["净值状态"] = nav_result.reason
+                else:
+                    suffix = "估值" if nav_result.kind == "估" else "真净值"
+                    r["净值状态"] = f"{nav_result.source}：{suffix}，披露/估值日 {nav_result.date}"
                 if shares > 0 and cost_price > 0:
                     r["成本额"] = cost_price * shares
-                    if pd.notna(nav):
+                    if nav is not None and pd.notna(nav):
                         r["市值"] = nav * shares
                         r["盈亏"] = (nav - cost_price) * shares
                     else:
-                        fallback_mv = h.get("market_value")
-                        fallback_profit = h.get("profit")
-                        if fallback_mv not in (None, ""):
-                            r["市值"] = float(fallback_mv)
-                            r["盈亏"] = float(fallback_profit or 0)
-                            r["净值状态"] = f"{nav_error}，暂用上次保存市值"
-                        else:
-                            r["市值"] = float("nan")
-                            r["盈亏"] = float("nan")
-                    r["今日估算盈亏"] = 0.0
+                        r["市值"] = float("nan")
+                        r["盈亏"] = float("nan")
                 else:
                     fallback_mv = h.get("market_value")
                     fallback_profit = h.get("profit")
@@ -1398,38 +1408,37 @@ def compute():
                         r["市值"] = float(fallback_mv)
                         r["盈亏"] = float(fallback_profit or 0)
                         r["成本额"] = r["市值"] - r["盈亏"]
-                        r["净值状态"] = "请在高级功能的持仓管理里改为“份额+成本单价”；当前暂用旧手填值"
+                        r["净值状态"] = f"{r['净值状态']}；这只仍是旧持仓格式，请在持仓管理改为“份额+成本单价”后才能自动重算市值"
                     else:
                         r["市值"] = float("nan")
                         r["盈亏"] = float("nan")
                         r["成本额"] = float("nan")
                         r["净值状态"] = "请在持仓管理填写份额和成本单价"
                 r["当日收益率"] = float("nan")
-                r["当日收益说明"] = "境外无盘中估值" if is_foreign else "估值暂不可用"
-                true_nav_pct = otc_true_nav_change(h["code"], nav, nav_date)
+                r["今日估算盈亏"] = float("nan")
                 today = china_today_string()
-                if not is_foreign and pd.notna(nav) and str(nav_date) == today and pd.notna(true_nav_pct):
+                if is_foreign:
+                    r["当日收益说明"] = "QDII/境外净值披露滞后"
+                elif nav_result.kind in ("估", "真") and str(nav_date) == today and nav_result.change_pct is not None:
                     base_mv = r["市值"] if pd.notna(r["市值"]) else float(h.get("market_value", 0) or 0)
-                    r["当日收益率"] = true_nav_pct
-                    r["今日估算盈亏"] = base_mv * true_nav_pct / 100
-                    r["当日收益说明"] = "已公布当日真净值"
+                    r["当日收益率"] = nav_result.change_pct
+                    r["今日估算盈亏"] = base_mv * nav_result.change_pct / 100
+                    r["当日收益说明"] = "盘中估值" if nav_result.kind == "估" else "已公布当日真净值"
                 elif not is_foreign:
-                    r["今日估算盈亏"] = float("nan")
-                    r["当日收益说明"] = "打开持仓页后按重仓估算"
-                else:
-                    r["今日估算盈亏"] = float("nan")
+                    r["当日收益说明"] = "暂无当日估值"
             else:
-                hist = price_hist(h["code"], h["type"] == "lof")
-                p = float(hist.iloc[-1]["close"])
-                prev = float(hist.iloc[-2]["close"]) if len(hist) > 1 else p
+                p = nav_result.nav
+                if p is None or pd.isna(p):
+                    raise RuntimeError(nav_result.reason or "行情暂不可用")
                 r["现价"] = p
-                r["市值"] = p * h["shares"]
+                r["市值"] = p * float(h["shares"])
                 r["成本额"] = h["cost"] * h["shares"]
                 r["盈亏"] = r["市值"] - r["成本额"]
-                r["今日估算盈亏"] = (p - prev) * h["shares"]
-                r["当日收益率"] = (p / prev - 1) * 100 if prev else float("nan")
-                r["当日收益说明"] = "行情估算"
-                r["数据日期"] = str(hist.iloc[-1]["date"].date())
+                r["当日收益率"] = nav_result.change_pct if nav_result.change_pct is not None else float("nan")
+                r["今日估算盈亏"] = r["市值"] * r["当日收益率"] / 100 if pd.notna(r["当日收益率"]) else float("nan")
+                r["当日收益说明"] = "新浪行情"
+                r["数据日期"] = nav_result.date
+                r["净值状态"] = nav_result.reason
             r["盈亏率"] = r["盈亏"] / r["成本额"] * 100 if pd.notna(r["成本额"]) and r["成本额"] else float("nan")
         except Exception as e:
             r["现价"] = float("nan")
@@ -1691,12 +1700,12 @@ def enrich_holding_estimates(show, fund_map):
     if show is None or len(show) == 0:
         return show
     out = show.copy()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = china_today_string()
     for idx, r in out.iterrows():
         if r.get("type") != "otc" or pd.notna(r.get("今日估算盈亏")):
             continue
         if fund_is_foreign_or_non_a(r.get("code"), fund_map):
-            out.at[idx, "当日收益说明"] = "境外无盘中估值"
+            out.at[idx, "当日收益说明"] = "QDII/境外净值披露滞后"
             continue
         true_nav_pct = otc_true_nav_change(r.get("code"), r.get("现价"), r.get("数据日期"))
         if str(r.get("数据日期")) == today and pd.notna(true_nav_pct):
@@ -1704,12 +1713,7 @@ def enrich_holding_estimates(show, fund_map):
             out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * true_nav_pct / 100
             out.at[idx, "当日收益说明"] = "已公布当日真净值"
             continue
-        est_pct, _, est_note = fund_top_a_share_estimate(r.get("code"))
-        if pd.notna(est_pct):
-            out.at[idx, "当日收益率"] = est_pct
-            out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * est_pct / 100
-            out.at[idx, "当日收益说明"] = est_note
-        elif pd.notna(true_nav_pct):
+        if pd.notna(true_nav_pct):
             out.at[idx, "当日收益率"] = true_nav_pct
             out.at[idx, "今日估算盈亏"] = float(r.get("市值", 0) or 0) * true_nav_pct / 100
             out.at[idx, "当日收益说明"] = "最新净值日收益，非盘中估值"
@@ -1731,7 +1735,7 @@ def board_display_for_row(r, fund_map, live):
             return display_board, weighted_board_change_from_detail(detail, live)
     board = temp_board if valid_board_name(temp_board) else tag
     if not valid_board_name(temp_board):
-        return ("境外/非A股" if is_true_non_a_fund(code) else "暂无估值"), float("nan")
+        return ("境外/非A股" if fund_is_foreign_or_non_a(code, fund_map) else "暂无估值"), float("nan")
     if live is None or len(live) == 0 or "板块" not in live.columns:
         return board, float("nan")
     m = live[live["板块"] == temp_board]
@@ -2565,7 +2569,7 @@ def render_advanced(df, board_source, using_old, fund_map):
     risk_notice(st)
 
 
-df = compute()
+df = compute(market_cache_key())
 snapshot_history = load_snapshot_history()
 fund_map = load_fund_board_map()
 try:

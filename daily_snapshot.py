@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 
 from my_holdings import HOLDINGS
+from nav_utils import get_nav, market_cache_key
 from project_paths import BOARD_HEAT_HISTORY_FILE, HISTORY_DIR, SNAPSHOTS_FILE
 
 
@@ -164,27 +165,35 @@ def account_totals():
             cost_price = float(h.get("cost", 0) or 0)
             if shares > 0 and cost_price > 0:
                 try:
-                    nav, data_date = latest_otc_nav(h["code"])
+                    nav_result = get_nav(h["code"], h.get("type", ""), h.get("name", ""), cache_key=market_cache_key())
+                    nav = nav_result.nav
+                    if nav is None:
+                        raise RuntimeError(nav_result.reason or "净值暂不可用")
+                    data_date = nav_result.date
                     latest_dates.append(data_date)
                     mv = nav * shares
                     cost = cost_price * shares
                 except Exception:
-                    mv = float(h.get("market_value", 0) or 0)
-                    profit = float(h.get("profit", 0) or 0)
-                    cost = mv - profit
+                    mv = float("nan")
+                    cost = float("nan")
             else:
                 mv = float(h.get("market_value", 0) or 0)
                 profit = float(h.get("profit", 0) or 0)
                 cost = mv - profit
         else:
-            close, data_date = latest_close(h["code"], h.get("type") == "lof")
+            nav_result = get_nav(h["code"], h.get("type", ""), h.get("name", ""), cache_key=market_cache_key())
+            if nav_result.nav is None:
+                raise RuntimeError(nav_result.reason or f"行情暂不可用：{h.get('code')}")
+            close, data_date = nav_result.nav, nav_result.date
             latest_dates.append(data_date)
             shares = float(h.get("shares", 0) or 0)
             cost_price = float(h.get("cost", 0) or 0)
             mv = close * shares
             cost = cost_price * shares
-        totals[acc]["mv"] += mv
-        totals[acc]["cost"] += cost
+        add_mv = mv if pd.notna(mv) else 0.0
+        add_cost = cost if pd.notna(cost) else 0.0
+        totals[acc]["mv"] += add_mv
+        totals[acc]["cost"] += add_cost
         hid = holding_snapshot_id(acc, h.get("type", ""), h.get("code", ""))
         item = holding_totals.setdefault(hid, {
             "account": acc,
@@ -194,8 +203,8 @@ def account_totals():
             "mv": 0.0,
             "cost": 0.0,
         })
-        item["mv"] += mv
-        item["cost"] += cost
+        item["mv"] += add_mv
+        item["cost"] += add_cost
     return totals, max(latest_dates) if latest_dates else "", holding_totals
 
 
