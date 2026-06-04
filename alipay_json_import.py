@@ -194,7 +194,8 @@ def build_alipay_preview(items, records, selected_codes=None):
                         "type": "otc",
                         "name": current_name or item["name"],
                         "code": code,
-                        "cost": round(cost, 6),
+                        "share_class": item.get("share_class", ""),
+                        "unit_cost": round(cost, 6),
                         "shares": round(shares, 4),
                     })
 

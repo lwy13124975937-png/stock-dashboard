@@ -21,6 +21,14 @@ import requests
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from account_import import (
+    ACCOUNT_IMPORT_PROMPTS,
+    ACCOUNT_IMPORT_SAMPLES,
+    account_code_options,
+    build_account_preview,
+    match_code,
+    parse_account_json,
+)
 from alipay_json_import import (
     ALIPAY_JSON_PROMPT,
     alipay_code_options,
@@ -351,15 +359,20 @@ ACCOUNT_KEYS = {
 }
 
 
-def holding_snapshot_id(account, htype, code):
+def holding_snapshot_id(account, htype, code, share_class=""):
     account_key = ACCOUNT_KEYS.get(str(account), re.sub(r"\W+", "_", str(account)).strip("_") or "account")
     type_key = re.sub(r"\W+", "_", str(htype)).strip("_") or "asset"
     code_key = re.sub(r"\W+", "_", str(code)).strip("_") or "code"
-    return f"{account_key}_{type_key}_{code_key}"
+    class_key = re.sub(r"\W+", "_", str(share_class or "")).strip("_")
+    return f"{account_key}_{type_key}_{code_key}_{class_key}" if class_key else f"{account_key}_{type_key}_{code_key}"
 
 
 def detail_key_for_row(r):
-    return f"{r.get('account', '')}|{r.get('type', '')}|{r.get('code', '')}"
+    return f"{r.get('account', '')}|{r.get('type', '')}|{r.get('code', '')}|{r.get('share_class', '') or ''}"
+
+
+def unit_cost_of(row):
+    return row.get("unit_cost", row.get("cost", 0))
 
 
 def signed_money(v):
@@ -1383,11 +1396,13 @@ def compute(cache_key=None):
     rows = []
     for h in HOLDINGS:
         r = dict(h)
+        r["share_class"] = str(h.get("share_class", "") or "")
+        r["unit_cost"] = float(unit_cost_of(h) or 0)
         try:
             nav_result = cached_get_nav(h["code"], h.get("type", ""), h.get("name", ""), market_cache_key())
             if h["type"] == "otc":
                 shares = float(h.get("shares", 0) or 0)
-                cost_price = float(h.get("cost", 0) or 0)
+                cost_price = float(unit_cost_of(h) or 0)
                 nav = nav_result.nav
                 nav_date = nav_result.date
                 is_foreign = nav_result.classify == "场外基金-QDII/境外"
@@ -1440,7 +1455,7 @@ def compute(cache_key=None):
                     raise RuntimeError(nav_result.reason or "行情暂不可用")
                 r["现价"] = p
                 r["市值"] = p * float(h["shares"])
-                r["成本额"] = h["cost"] * h["shares"]
+                r["成本额"] = float(unit_cost_of(h) or 0) * h["shares"]
                 r["盈亏"] = r["市值"] - r["成本额"]
                 day_amount, day_pct, day_status = calc_daily_return(nav_result, h.get("shares", 0))
                 r["当日收益率"] = day_pct if day_pct is not None else float("nan")
@@ -1463,7 +1478,7 @@ def compute(cache_key=None):
             r["错误"] = str(e)[:80]
         rows.append(r)
     cols = [
-        "account", "type", "name", "code", "cost", "shares", "market_value", "profit",
+        "account", "type", "name", "code", "share_class", "unit_cost", "cost", "shares", "market_value", "profit",
         "buy_date", "现价", "市值", "盈亏", "成本额", "盈亏率", "今日估算盈亏", "当日收益率", "当日收益说明", "数据日期", "净值状态", "错误",
     ]
     return pd.DataFrame(rows, columns=cols)
@@ -1678,10 +1693,18 @@ def aggregate_holdings_for_display(df):
     if df is None or len(df) == 0:
         return pd.DataFrame()
     rows = []
-    for (account, htype, code), g in df.groupby(["account", "type", "code"], dropna=False):
+    group_cols = ["account", "type", "code", "share_class"] if "share_class" in df.columns else ["account", "type", "code"]
+    for group_key, g in df.groupby(group_cols, dropna=False):
+        if len(group_cols) == 4:
+            account, htype, code, share_class = group_key
+        else:
+            account, htype, code = group_key
+            share_class = ""
         first = g.iloc[0].to_dict()
         shares = pd.to_numeric(g.get("shares"), errors="coerce").fillna(0).sum()
-        cost_amount = (pd.to_numeric(g.get("cost"), errors="coerce").fillna(0) * pd.to_numeric(g.get("shares"), errors="coerce").fillna(0)).sum()
+        cost_source = g["unit_cost"] if "unit_cost" in g.columns else g["cost"]
+        cost_series = pd.to_numeric(cost_source, errors="coerce").fillna(0)
+        cost_amount = (cost_series * pd.to_numeric(g.get("shares"), errors="coerce").fillna(0)).sum()
         mv = pd.to_numeric(g["市值"], errors="coerce").sum()
         cost_total = pd.to_numeric(g["成本额"], errors="coerce").sum()
         pnl = pd.to_numeric(g["盈亏"], errors="coerce").sum()
@@ -1690,8 +1713,10 @@ def aggregate_holdings_for_display(df):
         row["account"] = account
         row["type"] = htype
         row["code"] = str(code)
+        row["share_class"] = str(share_class or "")
         row["shares"] = shares
-        row["cost"] = cost_amount / shares if shares else first.get("cost", float("nan"))
+        row["unit_cost"] = cost_amount / shares if shares else first.get("unit_cost", first.get("cost", float("nan")))
+        row["cost"] = row["unit_cost"]
         row["市值"] = mv
         row["成本额"] = cost_total if cost_total else cost_amount
         row["盈亏"] = pnl
@@ -1925,7 +1950,7 @@ def render_performance_tab(r):
 
 
 def render_my_return_tab(r, snapshot_history):
-    hid = holding_snapshot_id(r["account"], r["type"], r["code"])
+    hid = holding_snapshot_id(r["account"], r["type"], r["code"], r.get("share_class", ""))
     profit_col = f"holding_{hid}_profit"
     mv_col = f"holding_{hid}_mv"
     ret_col = f"holding_{hid}_return_pct"
@@ -2005,22 +2030,39 @@ def render_holding_detail(df, snapshot_history, fund_map, live, board_history):
         dt = pd.to_datetime(buy_date, errors="coerce")
         if pd.notna(dt):
             holding_days = f"{max((pd.Timestamp.today().normalize() - dt.normalize()).days, 0)} 天"
-    c = st.columns(4)
+    hid = holding_snapshot_id(r["account"], r["type"], r["code"], r.get("share_class", ""))
+    yesterday_profit = "—"
+    try:
+        profit_col = f"holding_{hid}_profit"
+        if snapshot_history is not None and profit_col in snapshot_history.columns:
+            hist = snapshot_history.dropna(subset=["date"]).sort_values("date")
+            vals = pd.to_numeric(hist[profit_col], errors="coerce").dropna()
+            if len(vals) >= 2:
+                yesterday_profit = signed_money(vals.iloc[-1] - vals.iloc[-2])
+    except Exception:
+        yesterday_profit = "—"
+
+    c = st.columns(3)
     with c[0]:
-        card("持有金额", esc(fmt_money(r["市值"])), f"占总资产 {pct_text(position_pct)}")
+        card("金额", esc(fmt_money(r["市值"])), "")
     with c[1]:
         shares_text = "—" if not float(r.get("shares", 0) or 0) else f"{float(r.get('shares', 0) or 0):,.0f}"
-        card("持有份额", shares_text, f"成本 {fmt_price(r.get('cost'))}")
+        card("份额", shares_text, "")
     with c[2]:
-        card("持有收益", value_html(r["盈亏"], " 元", signed=True), signed_pct(r["盈亏率"]), cls(r["盈亏"]))
-    with c[3]:
-        card("当日收益", esc(signed_money(r["今日估算盈亏"])), signed_pct(r["当日收益率"]), cls(r["今日估算盈亏"]))
+        card("占比", esc(pct_text(position_pct)), "占总资产")
     c2 = st.columns(3)
     with c2[0]:
-        card("持仓成本", esc(fmt_money(r["成本额"])), "")
+        card("持有收益", value_html(r["盈亏"], " 元", signed=True), "", cls(r["盈亏"]))
     with c2[1]:
-        card("昨日收益", "—", "个人快照积累后显示")
+        card("收益率", f'<span class="{cls(r["盈亏率"])}">{esc(signed_pct(r["盈亏率"]))}</span>', "")
     with c2[2]:
+        card("持仓成本", esc(fmt_price(r.get("unit_cost", r.get("cost")))), "单位成本")
+    c3 = st.columns(3)
+    with c3[0]:
+        card("当日收益", esc(signed_money(r["今日估算盈亏"])), signed_pct(r["当日收益率"]), cls(r["今日估算盈亏"]))
+    with c3[1]:
+        card("昨日收益", esc(yesterday_profit), "按每日快照估算")
+    with c3[2]:
         card("持有天数", esc(holding_days), "可在持仓管理填写首次买入日期")
 
     tab1, tab2, tab3 = st.tabs(["业绩走势", "我的收益", "关联板块"])
@@ -2129,16 +2171,17 @@ def clean_managed_record(raw):
         "type": raw["type"],
         "name": str(raw.get("name", "")).strip(),
         "code": str(raw.get("code", "")).strip(),
+        "share_class": str(raw.get("share_class", "") or "").strip().upper(),
     }
     if not item["name"]:
         raise ValueError("名称不能为空")
     if not item["code"]:
         raise ValueError("代码不能为空")
     if item["type"] in {"stock", "lof", "otc"}:
-        item["cost"] = float(raw.get("cost") or 0)
+        item["unit_cost"] = float(raw.get("unit_cost", raw.get("cost")) or 0)
         item["shares"] = float(raw.get("shares") or 0)
-        if item["cost"] <= 0 or item["shares"] <= 0:
-            raise ValueError("成本价和持有份额必须大于 0")
+        if item["unit_cost"] <= 0 or item["shares"] <= 0:
+            raise ValueError("单位成本和持有份额必须大于 0")
     else:
         item["market_value"] = float(raw.get("market_value") or 0)
         item["profit"] = float(raw.get("profit") or 0)
@@ -2308,8 +2351,6 @@ def render_holding_manager():
     accounts = ["银河证券", "东方财富", "支付宝"]
     for acc in accounts:
         st.markdown(f"### {acc}")
-        if ACCOUNT_KEYS.get(acc) == "alipay":
-            render_alipay_json_sync(records)
         account_rows = [(i, r) for i, r in enumerate(records) if r.get("account") == acc]
         if not account_rows:
             st.caption("这个账户暂时没有持仓。")
@@ -2328,13 +2369,14 @@ def render_holding_manager():
                     c1, c2 = st.columns(2)
                     name = c1.text_input("名称", value=str(r.get("name", "")), placeholder="例如：中芯国际")
                     code = c2.text_input("代码", value=str(r.get("code", "")), placeholder="例如：688981")
+                    share_class = st.text_input("份额类别（可选，A/C/空）", value=str(r.get("share_class", "") or ""), placeholder="例如：A")
                     new_type = LABEL_TYPES[type_choice]
                     if new_type in {"stock", "lof", "otc"}:
                         c3, c4 = st.columns(2)
-                        cost = c3.number_input("成本价（每股/每份）", value=float(r.get("cost", 0) or 0), step=0.001, format="%.4f")
+                        cost = c3.number_input("单位成本（每股/每份）", value=float(unit_cost_of(r) or 0), step=0.001, format="%.4f")
                         shares = c4.number_input("持有份额", value=float(r.get("shares", 0) or 0), step=1.0)
                         buy_date = st.text_input("首次买入日期（可选）", value=str(r.get("buy_date", "")), placeholder="例如：2026-05-29", key=f"{form_key}_buy_date")
-                        raw = {"account": acc, "type": new_type, "name": name, "code": code, "cost": cost, "shares": shares, "buy_date": buy_date}
+                        raw = {"account": acc, "type": new_type, "name": name, "code": code, "share_class": share_class, "unit_cost": cost, "shares": shares, "buy_date": buy_date}
                         if new_type == "otc" and r.get("market_value") not in (None, "") and r.get("shares") in (None, ""):
                             st.caption("这只场外基金还是旧格式，请填入支付宝页面里的“持有份额”和“成本价”后保存。")
                     else:
@@ -2372,13 +2414,14 @@ def render_holding_manager():
                 c1, c2 = st.columns(2)
                 name = c1.text_input("名称", placeholder="例如：中芯国际")
                 code = c2.text_input("代码", placeholder="例如：688981")
+                share_class = st.text_input("份额类别（可选，A/C/空）", placeholder="例如：A")
                 new_type = LABEL_TYPES[type_choice]
                 if new_type in {"stock", "lof", "otc"}:
                     c3, c4 = st.columns(2)
-                    cost = c3.number_input("成本价（每股/每份）", min_value=0.0, step=0.001, format="%.4f")
+                    cost = c3.number_input("单位成本（每股/每份）", min_value=0.0, step=0.001, format="%.4f")
                     shares = c4.number_input("持有份额", min_value=0.0, step=1.0)
                     buy_date = st.text_input("首次买入日期（可选）", placeholder="例如：2026-05-29", key=f"{add_key}_buy_date")
-                    raw = {"account": acc, "type": new_type, "name": name, "code": code, "cost": cost, "shares": shares, "buy_date": buy_date}
+                    raw = {"account": acc, "type": new_type, "name": name, "code": code, "share_class": share_class, "unit_cost": cost, "shares": shares, "buy_date": buy_date}
                 else:
                     c3, c4 = st.columns(2)
                     market_value = c3.number_input("当前市值（元）", min_value=0.0, step=100.0)
@@ -2395,6 +2438,117 @@ def render_holding_manager():
                     st.error(f"添加流程异常：{type(e).__name__}：{e}")
                     render_github_sync_diag(expanded=False)
         st.divider()
+
+
+def _account_code_label(code, options):
+    if not code:
+        return "请选择/手填代码"
+    for opt in options:
+        if opt["code"] == code:
+            return f"{code}｜{opt.get('name', '')}"
+    return code
+
+
+def _render_account_import_preview(rows):
+    if not rows:
+        st.info("还没有可预览的记录。")
+        return
+    df = pd.DataFrame(rows)
+
+    def _shade(row):
+        if row.get("是否可写入") == "否":
+            return ["background-color: #fee2e2"] * len(row)
+        if row.get("状态") != "可写入":
+            return ["background-color: #fff7ed"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(df.style.apply(_shade, axis=1), use_container_width=True, hide_index=True)
+
+
+def account_import_widget():
+    account = st.selectbox("账户", ["支付宝", "银河证券", "东方财富"], key="account_import_account")
+    st.caption("先把截图发给能读图的 AI，复制本页提示词；再把 AI 返回的 JSON 粘到下面。系统只在你确认后写入。")
+    with st.expander("读图提示词（点开复制）", expanded=True):
+        st.code(ACCOUNT_IMPORT_PROMPTS[account], language=None)
+
+    raw_key = f"account_import_raw_{account}"
+    parsed_key = f"account_import_items_{account}"
+    st.session_state.setdefault(raw_key, "")
+    if st.button("载入示例JSON", key=f"account_import_sample_{account}"):
+        st.session_state[raw_key] = ACCOUNT_IMPORT_SAMPLES[account]
+        st.session_state[parsed_key] = []
+
+    raw = st.text_area("粘贴JSON", height=190, key=raw_key)
+    if st.button("解析并预览", type="primary", key=f"account_import_parse_{account}"):
+        try:
+            items = parse_account_json(raw, account)
+            st.session_state[parsed_key] = items
+            if items:
+                st.success(f"已解析 {len(items)} 条，请核对代码和预览。")
+            else:
+                st.warning("没有解析到持仓。")
+        except Exception as e:
+            st.session_state[parsed_key] = []
+            st.error(f"解析失败：{type(e).__name__}：{e}")
+
+    items = st.session_state.get(parsed_key, [])
+    if not items:
+        return
+
+    records = current_holdings()
+    base_options = account_code_options(records, account)
+    base_codes = [""] + [opt["code"] for opt in base_options]
+    selected_codes = {}
+    st.subheader("代码核对")
+    for idx, item in enumerate(items):
+        auto_code = match_code(item, account, records)
+        option_codes = list(base_codes)
+        if auto_code and auto_code not in option_codes:
+            option_codes.append(auto_code)
+        key = f"account_import_code_{account}_{idx}"
+        if key not in st.session_state:
+            st.session_state[key] = auto_code if auto_code in option_codes else ""
+        selected = st.selectbox(
+            f"{item.get('name', '')} 对应代码",
+            option_codes,
+            format_func=lambda c, opts=base_options: _account_code_label(c, opts),
+            key=key,
+        )
+        manual = st.text_input(
+            "如果上面没有，请手动填 6 位代码",
+            key=f"account_import_manual_{account}_{idx}",
+            placeholder="例如：600961",
+        ).strip()
+        selected_codes[idx] = manual or selected
+
+    with st.spinner("正在取最新净值/行情并生成预览..."):
+        preview_rows, proposed, merge_notes = build_account_preview(items, account, records, selected_codes)
+
+    st.subheader("预览确认")
+    if merge_notes:
+        for note in merge_notes:
+            st.info(note)
+    _render_account_import_preview(preview_rows)
+    invalid_rows = [r for r in preview_rows if r.get("是否可写入") != "是"]
+    if invalid_rows:
+        st.error("还有记录不能写入：请先修正代码、份额、成本或市值偏差。")
+
+    final_records = merge_records(records, proposed, "replace_same_account_type") if proposed else records
+    with st.expander("差异预览", expanded=False):
+        render_diff_preview(diff_records(records, final_records))
+
+    checked = st.checkbox("我已核对代码、份额、单位成本和市值偏差", key=f"account_import_checked_{account}")
+    if st.button("确认写入并同步", disabled=bool(invalid_rows) or not proposed or not checked, key=f"account_import_write_{account}"):
+        try:
+            backup, sync_ok, sync_msg = save_managed_holdings(final_records)
+            if sync_ok:
+                st.session_state[parsed_key] = []
+                st.session_state[raw_key] = ""
+            handle_holdings_save_result(backup, sync_ok, sync_msg)
+        except Exception as e:
+            st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
+            st.error(f"写入流程异常：{type(e).__name__}：{e}")
+            render_github_sync_diag(expanded=False)
 
 
 def render_home(df, exposure, board_source, snapshot_history):
@@ -2659,8 +2813,7 @@ def render_advanced(df, board_source, using_old, fund_map):
     if section == "持仓管理":
         render_holding_manager()
     elif section == "持仓导入":
-        template = st.selectbox("截图来源", list(IMPORT_TEMPLATES.keys()))
-        holding_import_widget(template, f"advanced_{template}")
+        account_import_widget()
     elif section == "数据更新日志":
         health = health_summary(df, board_source, using_old)
         st.dataframe(health, use_container_width=True, hide_index=True)

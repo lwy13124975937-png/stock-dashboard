@@ -42,11 +42,16 @@ def sina_fund(code):
     return ("sh" if str(code).startswith(("5", "6")) else "sz") + str(code)
 
 
-def holding_snapshot_id(account, htype, code):
+def holding_snapshot_id(account, htype, code, share_class=""):
     account_key = ACCOUNT_KEYS.get(str(account), re.sub(r"\W+", "_", str(account)).strip("_") or "account")
     type_key = re.sub(r"\W+", "_", str(htype)).strip("_") or "asset"
     code_key = re.sub(r"\W+", "_", str(code)).strip("_") or "code"
-    return f"{account_key}_{type_key}_{code_key}"
+    class_key = re.sub(r"\W+", "_", str(share_class or "")).strip("_")
+    return f"{account_key}_{type_key}_{code_key}_{class_key}" if class_key else f"{account_key}_{type_key}_{code_key}"
+
+
+def unit_cost_of(row):
+    return row.get("unit_cost", row.get("cost", 0))
 
 
 def retry(fn, n=4, wait=2):
@@ -162,7 +167,7 @@ def account_totals():
         totals.setdefault(acc, {"mv": 0.0, "cost": 0.0})
         if h.get("type") == "otc":
             shares = float(h.get("shares", 0) or 0)
-            cost_price = float(h.get("cost", 0) or 0)
+            cost_price = float(unit_cost_of(h) or 0)
             if shares > 0 and cost_price > 0:
                 try:
                     nav_result = get_nav(h["code"], h.get("type", ""), h.get("name", ""), cache_key=market_cache_key())
@@ -187,14 +192,14 @@ def account_totals():
             close, data_date = nav_result.nav, nav_result.date
             latest_dates.append(data_date)
             shares = float(h.get("shares", 0) or 0)
-            cost_price = float(h.get("cost", 0) or 0)
+            cost_price = float(unit_cost_of(h) or 0)
             mv = close * shares
             cost = cost_price * shares
         add_mv = mv if pd.notna(mv) else 0.0
         add_cost = cost if pd.notna(cost) else 0.0
         totals[acc]["mv"] += add_mv
         totals[acc]["cost"] += add_cost
-        hid = holding_snapshot_id(acc, h.get("type", ""), h.get("code", ""))
+        hid = holding_snapshot_id(acc, h.get("type", ""), h.get("code", ""), h.get("share_class", ""))
         item = holding_totals.setdefault(hid, {
             "account": acc,
             "type": h.get("type", ""),

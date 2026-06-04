@@ -92,7 +92,8 @@ def normalize_records(records, fill_from_current=True, default_account=None, def
             if item["type"] not in VALID_TYPES:
                 raise ValueError("type 只能是 stock / lof / otc")
             if item["type"] in POSITION_TYPES:
-                item["cost"] = to_float(r.get("cost"), "cost")
+                item["share_class"] = str(r.get("share_class", "") or "").strip().upper()
+                item["unit_cost"] = to_float(r.get("unit_cost", r.get("cost")), "unit_cost")
                 item["shares"] = to_float(r.get("shares"), "shares")
             else:
                 current = current_by_key().get(holding_key(item), {}) if fill_from_current else {}
@@ -121,10 +122,16 @@ def strip_import_metadata(records):
             "name": r["name"],
             "code": r["code"],
         }
-        if r["type"] in {"stock", "lof"} or (r["type"] == "otc" and ("cost" in r or "shares" in r)):
-            item["cost"] = float(r["cost"])
+        if r.get("share_class") not in (None, ""):
+            item["share_class"] = str(r.get("share_class")).strip().upper()
+        else:
+            item["share_class"] = ""
+        unit_cost = r.get("unit_cost", r.get("cost"))
+        if r["type"] in {"stock", "lof"} or (r["type"] == "otc" and ("unit_cost" in r or "cost" in r or "shares" in r)):
+            item["unit_cost"] = float(unit_cost)
             item["shares"] = float(r["shares"])
         else:
+            # Legacy fallback for old Alipay records before the JSON reverse-calc import.
             item["market_value"] = float(r["market_value"])
             item["profit"] = float(r["profit"])
         if r.get("buy_date"):
@@ -134,7 +141,12 @@ def strip_import_metadata(records):
 
 
 def holding_key(r):
-    return (str(r.get("account", "")), str(r.get("type", "")), str(r.get("code", "")))
+    return (
+        str(r.get("account", "")),
+        str(r.get("type", "")),
+        str(r.get("code", "")),
+        str(r.get("share_class", "") or ""),
+    )
 
 
 def _duplicate_signature(r):
@@ -144,7 +156,7 @@ def _duplicate_signature(r):
         str(r.get("code", "")),
         str(r.get("name", "")),
         float(r.get("shares", 0) or 0) if r.get("type") in POSITION_TYPES else "",
-        float(r.get("cost", 0) or 0) if r.get("type") in POSITION_TYPES else "",
+        float(r.get("unit_cost", r.get("cost", 0)) or 0) if r.get("type") in POSITION_TYPES else "",
         float(r.get("market_value", 0) or 0) if r.get("market_value") not in (None, "") else "",
         float(r.get("profit", 0) or 0) if r.get("profit") not in (None, "") else "",
     )
@@ -202,13 +214,14 @@ def consolidate_same_code(records):
 
         if first.get("type") in POSITION_TYPES:
             total_shares = sum(float(r.get("shares", 0) or 0) for r in unique_rows)
-            total_cost_amount = sum(float(r.get("cost", 0) or 0) * float(r.get("shares", 0) or 0) for r in unique_rows)
+            total_cost_amount = sum(float(r.get("unit_cost", r.get("cost", 0)) or 0) * float(r.get("shares", 0) or 0) for r in unique_rows)
             merged = {
                 "account": first["account"],
                 "type": first["type"],
                 "name": first["name"],
                 "code": first["code"],
-                "cost": round(total_cost_amount / total_shares, 4) if total_shares else float(first.get("cost", 0) or 0),
+                "share_class": str(first.get("share_class", "") or ""),
+                "unit_cost": round(total_cost_amount / total_shares, 4) if total_shares else float(first.get("unit_cost", first.get("cost", 0)) or 0),
                 "shares": total_shares,
                 "confidence": "中，已合并同代码多行，请核对数量和加权成本",
             }
@@ -278,7 +291,7 @@ def _record_summary(r):
     if not r:
         return ""
     if r.get("type") in POSITION_TYPES and r.get("shares") not in (None, ""):
-        return f"份额 {_fmt_num(r.get('shares'), 0)}；成本 {_fmt_num(r.get('cost'))}"
+        return f"份额 {_fmt_num(r.get('shares'), 0)}；单位成本 {_fmt_num(r.get('unit_cost', r.get('cost')))}"
     return f"市值 {_fmt_num(r.get('market_value'), 2)}；收益 {_fmt_num(r.get('profit'), 2)}"
 
 
@@ -286,11 +299,12 @@ def _record_changes(old, now):
     labels = {
         "name": "名称",
         "shares": "份额",
+        "unit_cost": "单位成本",
         "cost": "成本",
         "market_value": "市值",
         "profit": "收益",
     }
-    fields = ["name", "shares", "cost"] if now.get("type") in POSITION_TYPES and now.get("shares") not in (None, "") else ["name", "market_value", "profit"]
+    fields = ["name", "shares", "unit_cost"] if now.get("type") in POSITION_TYPES and now.get("shares") not in (None, "") else ["name", "market_value", "profit"]
     parts = []
     for field in fields:
         if _field_equal(old.get(field), now.get(field)):
@@ -391,7 +405,8 @@ def display_records(records):
             "名称": r.get("name", ""),
             "代码": r.get("code", ""),
             "数量/份额": r.get("shares", ""),
-            "成本": r.get("cost", ""),
+            "类别": r.get("share_class", ""),
+            "单位成本": r.get("unit_cost", r.get("cost", "")),
             "市值": r.get("market_value", ""),
             "收益": r.get("profit", ""),
             "现价": r.get("current_price", ""),
