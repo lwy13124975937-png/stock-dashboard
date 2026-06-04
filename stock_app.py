@@ -2838,23 +2838,6 @@ def render_advanced(df, board_source, using_old, fund_map):
     risk_notice(st)
 
 
-df = compute(market_cache_key())
-snapshot_history = load_snapshot_history()
-fund_map = load_fund_board_map()
-try:
-    board_history = load_board_history()
-    recent_sentiment, recent_note = build_recent_sentiment(board_history)
-    raw_boards, board_source, using_old_boards = boards_live()
-    live = score_boards(raw_boards, board_history)
-except Exception as e:
-    board_history = pd.DataFrame()
-    recent_sentiment, recent_note = {}, f"历史不足：{e}"
-    live = None
-    board_source = f"失败：{e}"
-    using_old_boards = True
-
-exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
-
 try:
     query = st.query_params
     should_clear_query = False
@@ -2891,6 +2874,29 @@ page = st.segmented_control(
     key="main_page",
     **page_kwargs,
 )
+
+snapshot_history = load_snapshot_history()
+fund_map = load_fund_board_map()
+
+if page == "高级功能":
+    render_advanced(pd.DataFrame(), "未加载", True, fund_map)
+    st.stop()
+
+with st.spinner("正在更新持仓行情和板块温度..."):
+    df = compute(market_cache_key())
+    try:
+        board_history = load_board_history()
+        recent_sentiment, recent_note = build_recent_sentiment(board_history)
+        raw_boards, board_source, using_old_boards = boards_live()
+        live = score_boards(raw_boards, board_history)
+    except Exception as e:
+        board_history = pd.DataFrame()
+        recent_sentiment, recent_note = {}, f"历史不足：{e}"
+        live = None
+        board_source = f"失败：{e}"
+        using_old_boards = True
+
+exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
 
 if page == "首页":
     render_home(df, exposure, board_source, snapshot_history)
