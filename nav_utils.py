@@ -416,7 +416,7 @@ def get_otc_qdii_nav(code, classify="场外基金-QDII/境外"):
         nav, date, prev_nav, prev_date, change_pct = akshare_open_latest(code)
         reason = "QDII/境外净值按基金披露节奏滞后更新"
         if date != china_today_string():
-            reason += "；今日净值未披露，当日收益待披露"
+            reason += f"；最新披露日为{date}，日期滞后属正常"
         result = NavResult(code, classify, "AkShare单位净值走势", nav, date, "真", change_pct, reason, prev_nav=prev_nav, prev_date=prev_date)
         write_nav_cache(result)
         return result
@@ -431,7 +431,7 @@ def get_otc_qdii_nav(code, classify="场外基金-QDII/境外"):
             change_pct = (true_nav / prev_nav - 1) * 100 if prev_nav else None
             reason = "AkShare失败后回退fundgz；QDII净值披露可能滞后"
             if true_date != china_today_string():
-                reason += "；今日净值未披露，当日收益待披露"
+                reason += f"；最新披露日为{true_date}，日期滞后属正常"
             result = NavResult(code, classify, "天天基金fundgz-dwjz", true_nav, true_date, "真", change_pct, reason, prev_nav=prev_nav, prev_date=prev_date)
             write_nav_cache(result)
             return result
@@ -473,13 +473,14 @@ def calc_daily_return(result, shares):
         return None, None, "暂无数据"
     if result.cache:
         return None, None, "接口失败，用缓存值，不算当日收益"
-    if result.classify.startswith("场外基金") and result.kind == "真" and result.date != china_today_string():
-        return None, None, "待披露"
     if result.prev_nav is None:
         return None, None, "昨值缺失"
     amount = (float(result.nav) - float(result.prev_nav)) * shares
     pct = (float(result.nav) / float(result.prev_nav) - 1) * 100 if result.prev_nav else None
-    return amount, pct, result.kind
+    status = result.kind
+    if result.classify.startswith("场外基金") and result.kind == "真" and result.date != china_today_string():
+        status = "最新披露"
+    return amount, pct, status
 
 
 def current_holdings_daily_check():

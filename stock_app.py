@@ -1456,6 +1456,8 @@ def compute(cache_key=None):
                     r["当日收益说明"] = "待披露"
                 elif day_status == "份额缺失":
                     r["当日收益说明"] = "份额缺失"
+                elif day_status == "最新披露":
+                    r["当日收益说明"] = f"{nav_result.date or '最新'}披露"
                 elif day_status in ("估", "真"):
                     r["当日收益说明"] = "盘中估值" if day_status == "估" else "已公布真净值"
                 elif is_foreign:
