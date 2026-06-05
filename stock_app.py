@@ -26,7 +26,10 @@ from account_import import (
     ACCOUNT_IMPORT_SAMPLES,
     account_code_options,
     build_account_preview,
+    code_match_info,
+    learn_code_mappings,
     match_code,
+    manual_code_groups,
     parse_account_json,
 )
 from alipay_json_import import (
@@ -56,7 +59,7 @@ from holding_import import (
 )
 from my_holdings import load_holdings_data
 from nav_utils import calc_daily_return, classify_fund, get_nav, market_cache_key
-from project_paths import BOARD_HEAT_HISTORY_FILE, DB, FUND_BOARD_MAP_FILE, HOLDINGS_DATA_FILE, SNAPSHOTS_FILE
+from project_paths import BOARD_HEAT_HISTORY_FILE, DB, FUND_BOARD_MAP_FILE, HOLDINGS_DATA_FILE, NAME_CODE_MAP_FILE, SNAPSHOTS_FILE
 from term_help import RISK_TIP, render_glossary, render_term, risk_notice
 
 
@@ -695,11 +698,10 @@ def render_github_sync_diag(expanded=False):
             )
 
 
-def push_holdings_to_github(json_text):
+def push_text_to_github(file_text, path, message):
     owner = optional_secret("GH_OWNER", "lwy13124975937-png")
     repo = optional_secret("GH_REPO", "stock-dashboard")
     branch = optional_secret("GH_BRANCH", "main")
-    path = optional_secret("GH_PATH", "holdings_data.json")
     diag = {
         "token_read": "否",
         "repo": f"{owner}/{repo}",
@@ -737,8 +739,8 @@ def push_holdings_to_github(json_text):
             return False, f"GitHub GET 返回 {get_resp.status_code}：{diag['get_message']}"
 
         payload = {
-            "message": "update holdings via app",
-            "content": base64.b64encode(json_text.encode("utf-8")).decode("ascii"),
+            "message": message,
+            "content": base64.b64encode(file_text.encode("utf-8")).decode("ascii"),
             "branch": branch,
         }
         if sha:
@@ -754,6 +756,17 @@ def push_holdings_to_github(json_text):
         diag["exception"] = f"{type(e).__name__}：{e}"
         set_github_sync_diag(diag)
         return False, f"同步过程异常：{type(e).__name__}：{e}"
+
+
+def push_holdings_to_github(json_text):
+    path = optional_secret("GH_PATH", "holdings_data.json")
+    return push_text_to_github(json_text, path, "update holdings via app")
+
+
+def push_name_code_map_to_github():
+    if not NAME_CODE_MAP_FILE.exists():
+        return True, ""
+    return push_text_to_github(NAME_CODE_MAP_FILE.read_text(encoding="utf-8"), "name_code_map.json", "update name-code map via app")
 
 
 def render_performance_curve(history, scope="total"):
@@ -2090,18 +2103,14 @@ def holding_import_widget(template_name, key_prefix):
 
     with st.expander("视觉模型提示词", expanded=False):
         st.code(cfg["prompt"], language="text")
+    with st.expander("示例内容（需要时复制）", expanded=False):
+        st.code(cfg["sample"], language="text")
 
     raw_key = f"{key_prefix}_raw_text"
     proposed_key = f"{key_prefix}_proposed"
     notes_key = f"{key_prefix}_duplicate_notes"
-    st.session_state.setdefault(raw_key, "")
     st.session_state.setdefault(proposed_key, None)
     st.session_state.setdefault(notes_key, [])
-
-    if st.button(f"载入{template_name}示例", key=f"{key_prefix}_load_sample"):
-        st.session_state[raw_key] = cfg["sample"]
-        st.session_state[proposed_key] = None
-        st.session_state[notes_key] = []
 
     raw = st.text_area("粘贴识别结果（JSON 或 CSV）", height=180, key=raw_key)
     if st.button("解析并预览", type="primary", key=f"{key_prefix}_parse"):
@@ -2255,7 +2264,6 @@ def render_alipay_json_sync(records):
 
     raw_key = "alipay_json_raw"
     items_key = "alipay_json_items"
-    st.session_state.setdefault(raw_key, "")
 
     raw = st.text_area(
         "粘贴持仓JSON",
@@ -2326,7 +2334,6 @@ def render_alipay_json_sync(records):
             backup, sync_ok, sync_msg = save_managed_holdings(final_records)
             if sync_ok:
                 st.session_state[items_key] = []
-                st.session_state[raw_key] = ""
             handle_holdings_save_result(backup, sync_ok, sync_msg)
         except Exception as e:
             st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}
@@ -2465,31 +2472,57 @@ def _render_account_import_preview(rows):
     st.dataframe(df.style.apply(_shade, axis=1), use_container_width=True, hide_index=True)
 
 
+@st.cache_data(ttl=180)
+def cached_account_preview(items_json, account, records_json, selected_codes_json, cache_key):
+    _ = cache_key
+    items = json.loads(items_json)
+    records = json.loads(records_json)
+    selected_raw = json.loads(selected_codes_json)
+    selected_codes = {int(k): v for k, v in selected_raw.items()}
+    return build_account_preview(items, account, records, selected_codes)
+
+
 def account_import_widget():
     account = st.selectbox("账户", ["支付宝", "银河证券", "东方财富"], key="account_import_account")
     st.caption("先把截图发给能读图的 AI，复制本页提示词；再把 AI 返回的 JSON 粘到下面。系统只在你确认后写入。")
     with st.expander("读图提示词（点开复制）", expanded=True):
         st.code(ACCOUNT_IMPORT_PROMPTS[account], language=None)
+    with st.expander("示例 JSON（需要时复制，不会自动写入）", expanded=False):
+        st.code(ACCOUNT_IMPORT_SAMPLES[account], language="json")
 
-    raw_key = f"account_import_raw_{account}"
-    parsed_key = f"account_import_items_{account}"
-    st.session_state.setdefault(raw_key, "")
-    if st.button("载入示例JSON", key=f"account_import_sample_{account}"):
-        st.session_state[raw_key] = ACCOUNT_IMPORT_SAMPLES[account]
-        st.session_state[parsed_key] = []
+    raw_key = f"account_import_raw_input_{account}"
+    parsed_key = f"account_import_parsed_items_{account}"
+    parse_status_key = f"account_import_parse_status_{account}"
+    raw = st.text_area(
+        "粘贴JSON",
+        height=190,
+        key=raw_key,
+        placeholder="把 AI 返回的 JSON 粘到这里。示例在上方折叠框里，可复制后试跑。",
+    )
+    status = st.session_state.get(parse_status_key)
+    if status:
+        level, message = status
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        else:
+            st.error(message)
 
-    raw = st.text_area("粘贴JSON", height=190, key=raw_key)
     if st.button("解析并预览", type="primary", key=f"account_import_parse_{account}"):
         try:
             items = parse_account_json(raw, account)
             st.session_state[parsed_key] = items
             if items:
-                st.success(f"已解析 {len(items)} 条，请核对代码和预览。")
+                st.session_state[parse_status_key] = ("success", f"已解析 {len(items)} 条，请核对预览。自动匹配成功的代码不会再打扰你。")
+                st.rerun()
             else:
-                st.warning("没有解析到持仓。")
+                st.session_state[parse_status_key] = ("warning", "没有解析到持仓。")
+                st.rerun()
         except Exception as e:
             st.session_state[parsed_key] = []
-            st.error(f"解析失败：{type(e).__name__}：{e}")
+            st.session_state[parse_status_key] = ("error", f"解析失败：{type(e).__name__}：{e}")
+            st.rerun()
 
     items = st.session_state.get(parsed_key, [])
     if not items:
@@ -2499,30 +2532,44 @@ def account_import_widget():
     base_options = account_code_options(records, account)
     base_codes = [""] + [opt["code"] for opt in base_options]
     selected_codes = {}
-    st.subheader("代码核对")
+    auto_rows = []
     for idx, item in enumerate(items):
-        auto_code = match_code(item, account, records)
-        option_codes = list(base_codes)
-        if auto_code and auto_code not in option_codes:
-            option_codes.append(auto_code)
-        key = f"account_import_code_{account}_{idx}"
-        if key not in st.session_state:
-            st.session_state[key] = auto_code if auto_code in option_codes else ""
-        selected = st.selectbox(
-            f"{item.get('name', '')} 对应代码",
-            option_codes,
-            format_func=lambda c, opts=base_options: _account_code_label(c, opts),
-            key=key,
-        )
-        manual = st.text_input(
-            "如果上面没有，请手动填 6 位代码",
-            key=f"account_import_manual_{account}_{idx}",
-            placeholder="例如：600961",
-        ).strip()
-        selected_codes[idx] = manual or selected
+        info = code_match_info(item, account, records)
+        if info["code"]:
+            selected_codes[idx] = info["code"]
+        auto_rows.append({"名称": item.get("name", ""), "代码": info["code"] or "待填写", "状态": info["status"]})
+
+    st.subheader("代码匹配")
+    st.dataframe(pd.DataFrame(auto_rows), use_container_width=True, hide_index=True)
+    groups = manual_code_groups(items, account, records)
+    if groups:
+        st.warning("下面这些名称还没匹配到代码。手填一次并确认写入后，系统会记住。")
+        for group_key, group in groups.items():
+            st.caption(f"{group['label']}（影响 {len(group['indices'])} 行）")
+            option_codes = list(base_codes)
+            group_select = st.selectbox(
+                "从已有代码里选（没有就留空）",
+                option_codes,
+                format_func=lambda c, opts=base_options: _account_code_label(c, opts),
+                key=f"account_import_code_select_{account}_{group_key}",
+            )
+            group_manual = st.text_input(
+                "或手动填 6 位代码",
+                key=f"account_import_code_manual_{account}_{group_key}",
+                placeholder="例如：600961",
+            ).strip()
+            final_code = group_manual or group_select
+            for idx in group["indices"]:
+                selected_codes[idx] = final_code
 
     with st.spinner("正在取最新净值/行情并生成预览..."):
-        preview_rows, proposed, merge_notes = build_account_preview(items, account, records, selected_codes)
+        preview_rows, proposed, merge_notes = cached_account_preview(
+            json.dumps(items, ensure_ascii=False, sort_keys=True),
+            account,
+            json.dumps(records, ensure_ascii=False, sort_keys=True),
+            json.dumps(selected_codes, ensure_ascii=False, sort_keys=True),
+            market_cache_key(),
+        )
 
     st.subheader("预览确认")
     if merge_notes:
@@ -2537,13 +2584,24 @@ def account_import_widget():
     with st.expander("差异预览", expanded=False):
         render_diff_preview(diff_records(records, final_records))
 
-    checked = st.checkbox("我已核对代码、份额、单位成本和市值偏差", key=f"account_import_checked_{account}")
-    if st.button("确认写入并同步", disabled=bool(invalid_rows) or not proposed or not checked, key=f"account_import_write_{account}"):
+    with st.form(f"account_import_confirm_form_{account}"):
+        checked = st.checkbox("我已核对代码、份额、单位成本和市值偏差", key=f"account_import_confirm_checked_{account}")
+        submitted = st.form_submit_button("确认写入并同步", disabled=bool(invalid_rows) or not proposed)
+    if submitted:
+        if not checked:
+            st.warning("请先勾选“我已核对”。")
+            return
         try:
+            learned = learn_code_mappings(items, selected_codes, account)
             backup, sync_ok, sync_msg = save_managed_holdings(final_records)
+            if learned:
+                st.caption("已学习代码映射：" + "；".join(learned[:6]) + ("..." if len(learned) > 6 else ""))
+                if sync_ok:
+                    map_ok, map_msg = push_name_code_map_to_github()
+                    if not map_ok:
+                        st.warning(f"持仓已同步，但名称代码映射表同步失败：{map_msg}")
             if sync_ok:
                 st.session_state[parsed_key] = []
-                st.session_state[raw_key] = ""
             handle_holdings_save_result(backup, sync_ok, sync_msg)
         except Exception as e:
             st.session_state["github_sync_diag"] = {"异常": f"{type(e).__name__}：{e}"}

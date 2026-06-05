@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Three-account holdings import parser and preview builder."""
+"""Three-account holdings import parser, code matching, and preview builder."""
 import json
 import re
+from difflib import SequenceMatcher
 
 import pandas as pd
 
 from alipay_json_import import infer_share_class, normalize_fund_name
 from holding_import import clean_code
 from nav_utils import get_nav, market_cache_key
+from project_paths import NAME_CODE_MAP_FILE
 
 
 ACCOUNT_IMPORT_PROMPTS = {
@@ -38,18 +40,6 @@ ACCOUNT_IMPORT_SAMPLES = {
 }
 
 
-EASTMONEY_SEED_CODES = {
-    "株冶集团": "600961",
-    "贵研铂业": "600459",
-    "格力电器": "000651",
-    "洛阳钼业": "603993",
-    "赛轮轮胎": "601058",
-    "白银基金": "161226",
-    "国投白银": "161226",
-    "国投白银LOF": "161226",
-}
-
-
 def _to_float(value, field):
     if value is None or value == "":
         raise ValueError(f"{field} 不能为空")
@@ -64,8 +54,101 @@ def _to_float(value, field):
 def _norm(text):
     text = str(text or "").lower()
     text = re.sub(r"\([^)]*\)|（[^）]*）", "", text)
+    text = text.replace("人民币", "")
+    text = re.sub(r"[ac]类?$", "", text, flags=re.I)
     text = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", text)
     return text
+
+
+def mother_name_key(name):
+    """Return a loose matching key shared by the same product name."""
+    text = normalize_fund_name(name)
+    if not text:
+        text = _norm(name)
+    for word in ("混合型", "股票型", "债券型", "指数型", "混合", "股票", "债券", "指数", "基金", "lof", "etf", "qdii"):
+        text = text.replace(word, "")
+    return _norm(text)
+
+
+def _read_name_code_map():
+    try:
+        if NAME_CODE_MAP_FILE.exists():
+            data = json.loads(NAME_CODE_MAP_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {"entries": []}
+
+
+def _write_name_code_map(data):
+    payload = {"entries": data.get("entries", []) if isinstance(data, dict) else []}
+    NAME_CODE_MAP_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _map_entries(records=None):
+    entries = []
+    data = _read_name_code_map()
+    for raw in data.get("entries", []):
+        if not isinstance(raw, dict):
+            continue
+        code = clean_code(raw.get("code", ""))
+        name = str(raw.get("name", "")).strip()
+        if code and name:
+            entries.append({
+                "name": name,
+                "code": code,
+                "account": str(raw.get("account", "") or ""),
+                "type": str(raw.get("type", "") or ""),
+                "share_class": str(raw.get("share_class", "") or "").strip().upper(),
+                "source": str(raw.get("source", "映射表") or "映射表"),
+            })
+    for r in records or []:
+        code = clean_code(r.get("code", ""))
+        name = str(r.get("name", "")).strip()
+        if code and name:
+            entries.append({
+                "name": name,
+                "code": code,
+                "account": str(r.get("account", "") or ""),
+                "type": str(r.get("type", "") or ""),
+                "share_class": str(r.get("share_class", "") or "").strip().upper(),
+                "source": "现有持仓",
+            })
+    return entries
+
+
+def learn_code_mappings(items, selected_codes, account):
+    """Persist hand-filled or newly confirmed name-code mappings for next import."""
+    data = _read_name_code_map()
+    entries = [e for e in data.get("entries", []) if isinstance(e, dict)]
+    index = {
+        (mother_name_key(e.get("name", "")), str(e.get("share_class", "") or "").upper(), str(e.get("account", "") or ""), clean_code(e.get("code", "")))
+        for e in entries
+    }
+    added = []
+    for idx, item in enumerate(items):
+        code = clean_code(selected_codes.get(idx) or item.get("code", ""))
+        name = str(item.get("name", "")).strip()
+        if not code or not name:
+            continue
+        share_class = str(item.get("share_class", "") or "").strip().upper()
+        key = (mother_name_key(name), share_class, account, code)
+        if key in index:
+            continue
+        entries.append({
+            "name": name,
+            "code": code,
+            "account": account,
+            "type": holding_type_for_code(code, account),
+            "share_class": share_class,
+            "source": "导入确认学习",
+        })
+        index.add(key)
+        added.append(f"{name} → {code}")
+    if added:
+        _write_name_code_map({"entries": entries})
+    return added
 
 
 def holding_type_for_code(code, account):
@@ -122,52 +205,87 @@ def parse_account_json(text, account):
 def account_code_options(records, account):
     seen = set()
     out = []
-    for r in records:
-        if r.get("account") != account:
+    for entry in _map_entries(records):
+        code = clean_code(entry.get("code", ""))
+        if not code or code in seen:
             continue
-        code = clean_code(r.get("code", ""))
-        if code and code not in seen:
-            out.append({"code": code, "name": r.get("name", ""), "share_class": str(r.get("share_class", "") or "")})
-            seen.add(code)
-    if account == "东方财富":
-        for name, code in EASTMONEY_SEED_CODES.items():
-            if code not in seen:
-                out.append({"code": code, "name": name, "share_class": ""})
-                seen.add(code)
+        if entry.get("account") and entry.get("account") not in ("通用", account):
+            continue
+        out.append({
+            "code": code,
+            "name": entry.get("name", ""),
+            "share_class": str(entry.get("share_class", "") or ""),
+            "source": entry.get("source", ""),
+        })
+        seen.add(code)
     return out
+
+
+def _score_match(item, entry, account):
+    code = clean_code(entry.get("code", ""))
+    if not code:
+        return 0.0
+    if entry.get("account") and entry.get("account") not in ("通用", account):
+        return 0.0
+    item_class = str(item.get("share_class", "") or "").upper()
+    entry_class = str(entry.get("share_class", "") or "").upper()
+    if item_class and entry_class and item_class != entry_class:
+        return 0.0
+    item_key = mother_name_key(item.get("name", ""))
+    entry_key = mother_name_key(entry.get("name", ""))
+    if not item_key or not entry_key:
+        return 0.0
+    if item_key == entry_key:
+        score = 100.0
+    elif item_key in entry_key or entry_key in item_key:
+        score = 88.0 + min(len(item_key), len(entry_key)) / max(len(item_key), len(entry_key), 1) * 8
+    else:
+        score = SequenceMatcher(None, item_key, entry_key).ratio() * 100
+    if item_class and entry_class == item_class:
+        score += 8
+    if entry.get("source") == "现有持仓":
+        score += 4
+    return score
 
 
 def match_code(item, account, records):
     direct = clean_code(item.get("code", ""))
     if direct:
         return direct
-    name = item.get("name", "")
-    if account == "东方财富":
-        norm_name = _norm(name)
-        for seed_name, code in EASTMONEY_SEED_CODES.items():
-            n = _norm(seed_name)
-            if n and (n in norm_name or norm_name in n):
-                return code
-    options = account_code_options(records, account)
-    item_name = normalize_fund_name(name) if account == "支付宝" else _norm(name)
-    item_class = str(item.get("share_class", "") or "")
-    scored = []
-    for opt in options:
-        rec_name = normalize_fund_name(opt["name"]) if account == "支付宝" else _norm(opt["name"])
-        rec_class = str(opt.get("share_class", "") or "")
-        if item_class and rec_class and item_class != rec_class:
+    candidates = []
+    for entry in _map_entries(records):
+        score = _score_match(item, entry, account)
+        if score >= 72:
+            candidates.append((score, clean_code(entry.get("code", ""))))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    best_score, best_code = candidates[0]
+    if len(candidates) > 1 and best_score - candidates[1][0] < 3:
+        return ""
+    return best_code
+
+
+def code_match_info(item, account, records):
+    direct = clean_code(item.get("code", ""))
+    if direct:
+        return {"code": direct, "status": "输入自带代码", "needs_manual": False}
+    code = match_code(item, account, records)
+    if code:
+        return {"code": code, "status": "已自动匹配", "needs_manual": False}
+    return {"code": "", "status": "未匹配到代码，请手填一次", "needs_manual": True}
+
+
+def manual_code_groups(items, account, records):
+    groups = {}
+    for idx, item in enumerate(items):
+        info = code_match_info(item, account, records)
+        if not info["needs_manual"]:
             continue
-        if rec_name and item_name and (rec_name in item_name or item_name in rec_name):
-            score = min(len(rec_name), len(item_name))
-            if item_class and rec_class == item_class:
-                score += 100
-            scored.append((score, opt["code"]))
-    if not scored:
-        return ""
-    scored.sort(reverse=True)
-    if len(scored) > 1 and scored[0][0] == scored[1][0]:
-        return ""
-    return scored[0][1]
+        group = mother_name_key(item.get("name", "")) or f"row_{idx}"
+        groups.setdefault(group, {"label": item.get("name", ""), "indices": []})
+        groups[group]["indices"].append(idx)
+    return groups
 
 
 def _merge_position_rows(rows):
@@ -208,12 +326,13 @@ def build_account_preview(items, account, records, selected_codes=None):
     proposed_raw = []
     preview = []
     for idx, item in enumerate(items):
-        code = clean_code(selected_codes.get(idx) or match_code(item, account, records))
+        auto_info = code_match_info(item, account, records)
+        code = clean_code(selected_codes.get(idx) or auto_info["code"])
         row = {
             "账户": account,
             "名称": item["name"],
             "类别": item.get("share_class", ""),
-            "代码": code or "待选择",
+            "代码": code or "待填写",
             "份额": "—",
             "单位成本": "—",
             "今NAV+日期": "—",
@@ -222,14 +341,14 @@ def build_account_preview(items, account, records, selected_codes=None):
             "收益率": "—",
             "截图市值": "—",
             "状态": "可写入",
-            "提示": "",
+            "提示": auto_info["status"],
             "是否可写入": "是",
         }
-        notes = []
+        notes = [auto_info["status"]] if auto_info["status"] else []
         ok = True
         if not code:
             ok = False
-            row["状态"] = "需手选代码"
+            row["状态"] = "需填写代码"
             notes.append("未匹配到代码")
 
         htype = holding_type_for_code(code, account) if code else ("otc" if account == "支付宝" else "stock")
@@ -282,8 +401,9 @@ def build_account_preview(items, account, records, selected_codes=None):
             row["单位成本"] = f"{unit_cost:.4f}"
             if calc_mv is not None and pd.notna(calc_mv):
                 row["算出市值"] = f"{calc_mv:,.2f}"
-                profit = shares * ((nav if nav is not None else float(item.get("price", unit_cost))) - unit_cost)
-                rate = ((nav if nav is not None else float(item.get("price", unit_cost))) / unit_cost - 1) * 100 if unit_cost else float("nan")
+                basis = nav if nav is not None else float(item.get("price", unit_cost))
+                profit = shares * (basis - unit_cost)
+                rate = (basis / unit_cost - 1) * 100 if unit_cost else float("nan")
                 row["持有收益"] = f"{profit:+,.2f}"
                 row["收益率"] = f"{rate:+.2f}%"
             if screenshot_mv not in (None, ""):
@@ -297,7 +417,7 @@ def build_account_preview(items, account, records, selected_codes=None):
                         ok = False
                         notes.append(f"算出市值与截图市值偏差 {gap:.1%}，请核对代码/份额/成本")
             if account == "支付宝" and nav_date:
-                notes.append(f"按 {nav_date} 披露净值反推；QDII 净值滞后属正常")
+                notes.append(f"按 {nav_date} 披露净值反推；若为QDII，净值日期滞后属正常")
             if ok:
                 proposed_raw.append({
                     "account": account,
@@ -311,7 +431,7 @@ def build_account_preview(items, account, records, selected_codes=None):
 
         if not ok and row["是否可写入"] == "是":
             row["是否可写入"] = "否"
-        row["提示"] = "；".join(notes)
+        row["提示"] = "；".join(dict.fromkeys([n for n in notes if n]))
         preview.append(row)
 
     proposed, merge_notes = _merge_position_rows(proposed_raw)

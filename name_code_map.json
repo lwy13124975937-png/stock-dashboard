@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {"name": "株冶集团", "code": "600961", "account": "通用", "type": "stock", "share_class": "", "source": "初始映射"},
+    {"name": "贵研铂业", "code": "600459", "account": "通用", "type": "stock", "share_class": "", "source": "初始映射"},
+    {"name": "格力电器", "code": "000651", "account": "通用", "type": "stock", "share_class": "", "source": "初始映射"},
+    {"name": "洛阳钼业", "code": "603993", "account": "通用", "type": "stock", "share_class": "", "source": "初始映射"},
+    {"name": "赛轮轮胎", "code": "601058", "account": "通用", "type": "stock", "share_class": "", "source": "初始映射"},
+    {"name": "白银基金", "code": "161226", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "国投白银LOF", "code": "161226", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "电网设备ETF华夏", "code": "159326", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "港美互联网LOF", "code": "160644", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "港股小盘LOF", "code": "161124", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "财通福享混合LOF", "code": "501026", "account": "通用", "type": "lof", "share_class": "", "source": "初始映射"},
+    {"name": "易方达全球成长", "code": "012922", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"},
+    {"name": "永赢高端装备", "code": "015789", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"},
+    {"name": "东方人工智能", "code": "017811", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"},
+    {"name": "国泰国证有色", "code": "160221", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"},
+    {"name": "易方达科鑫量化", "code": "022755", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"},
+    {"name": "建信新兴市场", "code": "018147", "account": "通用", "type": "otc", "share_class": "", "source": "初始映射"}
+  ]
+}

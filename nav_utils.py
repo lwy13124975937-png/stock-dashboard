@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 for v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
@@ -264,6 +265,7 @@ def akshare_open_previous_before(code, before_date):
     return float(row[nav_col]), str(row[date_col].date())
 
 
+@lru_cache(maxsize=512)
 def fund_portfolio_profile(code):
     """用前十大重仓自动判断场外基金是否以A股为主。"""
     code = clean_code(code)
