@@ -214,6 +214,46 @@ def fundgz_data(code):
     return retry(fetch, n=3, wait=1)
 
 
+def eastmoney_lsjz_latest(code):
+    code = clean_code(code)
+    url = "https://api.fund.eastmoney.com/f10/lsjz"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": f"https://fund.eastmoney.com/{code}.html",
+        "Accept": "application/json,text/plain,*/*",
+    }
+
+    def fetch():
+        resp = requests.get(
+            url,
+            headers=headers,
+            params={"fundCode": code, "pageIndex": 1, "pageSize": 5},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rows = ((data.get("Data") or {}).get("LSJZList") or [])
+        if not rows:
+            raise RuntimeError("东方财富历史净值列表为空")
+        parsed = []
+        for row in rows:
+            date = str(row.get("FSRQ") or "").strip()
+            nav = to_float(row.get("DWJZ"))
+            if date and nav:
+                parsed.append((pd.to_datetime(date), float(nav), row))
+        if not parsed:
+            raise RuntimeError("东方财富历史净值缺少日期或单位净值")
+        parsed = sorted(parsed, key=lambda x: x[0], reverse=True)
+        latest_dt, nav, latest_row = parsed[0]
+        prev_dt, prev_nav, _ = parsed[1] if len(parsed) > 1 else parsed[0]
+        change_pct = to_float(latest_row.get("JZZZL"))
+        if change_pct is None and prev_nav:
+            change_pct = (nav / prev_nav - 1) * 100
+        return nav, str(latest_dt.date()), float(prev_nav), str(prev_dt.date()), change_pct
+
+    return retry(fetch, n=3, wait=1)
+
+
 def open_fund_nav_frame(code):
     def fetch():
         df = ak.fund_open_fund_info_em(symbol=clean_code(code), indicator="单位净值走势")
@@ -368,6 +408,16 @@ def get_exchange_fund_nav(code):
 def get_otc_a_share_nav(code, name=""):
     code = clean_code(code)
     errors = []
+    after_close = (china_now().hour, china_now().minute) >= (15, 5)
+    if after_close:
+        try:
+            nav, date, prev_nav, prev_date, change_pct = eastmoney_lsjz_latest(code)
+            reason = "东方财富历史净值接口，优先取最新已披露真净值"
+            result = NavResult(code, "场外基金-A股主题", "东方财富历史净值lsjz", nav, date, "真", change_pct, reason, prev_nav=prev_nav, prev_date=prev_date)
+            write_nav_cache(result)
+            return result
+        except Exception as e:
+            errors.append(f"东方财富历史净值失败：{str(e)[:100]}")
     try:
         data = fundgz_data(code)
         true_nav = to_float(data.get("dwjz"))
@@ -377,7 +427,6 @@ def get_otc_a_share_nav(code, name=""):
         est_time = str(data.get("gztime") or "").strip()
         est_date = str(pd.to_datetime(est_time, errors="coerce").date()) if est_time else ""
         today = china_today_string()
-        after_close = (china_now().hour, china_now().minute) >= (15, 5)
         if after_close and true_nav and true_date == today:
             prev_nav, prev_date = akshare_open_previous_before(code, true_date)
             change_pct = (true_nav / prev_nav - 1) * 100 if prev_nav else None
@@ -400,6 +449,13 @@ def get_otc_a_share_nav(code, name=""):
     except Exception as e:
         errors.append(f"天天基金fundgz失败：{str(e)[:100]}")
     try:
+        nav, date, prev_nav, prev_date, change_pct = eastmoney_lsjz_latest(code)
+        result = NavResult(code, "场外基金-A股主题", "东方财富历史净值lsjz", nav, date, "真", change_pct, "fundgz失败后回退东方财富历史净值", prev_nav=prev_nav, prev_date=prev_date)
+        write_nav_cache(result)
+        return result
+    except Exception as e:
+        errors.append(f"东方财富历史净值失败：{str(e)[:100]}")
+    try:
         nav, date, prev_nav, prev_date, change_pct = akshare_open_latest(code)
         result = NavResult(code, "场外基金-A股主题", "AkShare单位净值走势", nav, date, "真", change_pct, "fundgz失败后回退AkShare", prev_nav=prev_nav, prev_date=prev_date)
         write_nav_cache(result)
@@ -412,6 +468,16 @@ def get_otc_a_share_nav(code, name=""):
 def get_otc_qdii_nav(code, classify="场外基金-QDII/境外"):
     code = clean_code(code)
     errors = []
+    try:
+        nav, date, prev_nav, prev_date, change_pct = eastmoney_lsjz_latest(code)
+        reason = "东方财富历史净值接口，QDII/境外按基金披露节奏滞后更新"
+        if date != china_today_string():
+            reason += f"；最新披露日为{date}，日期滞后属正常"
+        result = NavResult(code, classify, "东方财富历史净值lsjz", nav, date, "真", change_pct, reason, prev_nav=prev_nav, prev_date=prev_date)
+        write_nav_cache(result)
+        return result
+    except Exception as e:
+        errors.append(f"东方财富历史净值失败：{str(e)[:100]}")
     try:
         nav, date, prev_nav, prev_date, change_pct = akshare_open_latest(code)
         reason = "QDII/境外净值按基金披露节奏滞后更新"
