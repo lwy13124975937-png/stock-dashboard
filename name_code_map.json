@@ -215,6 +215,54 @@
       "type": "otc",
       "share_class": "C",
       "source": "导入确认学习"
+    },
+    {
+      "name": "电网设备ETF华夏",
+      "code": "159326",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
+    },
+    {
+      "name": "港美互联网LOF",
+      "code": "160644",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
+    },
+    {
+      "name": "港股小盘LOF",
+      "code": "161124",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
+    },
+    {
+      "name": "国投白银LOF",
+      "code": "161226",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
+    },
+    {
+      "name": "财通福享混合LOF",
+      "code": "501026",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
+    },
+    {
+      "name": "海外科技LOF",
+      "code": "501312",
+      "account": "银河证券",
+      "type": "lof",
+      "share_class": "",
+      "source": "导入确认学习"
     }
   ]
 }
