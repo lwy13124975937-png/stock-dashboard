@@ -102,56 +102,11 @@
     {
       "account": "支付宝",
       "type": "otc",
-      "name": "建信新兴市场优选混合(QDII)A",
-      "code": "018147",
-      "share_class": "A",
-      "unit_cost": 2.456583,
-      "shares": 170.9692
-    },
-    {
-      "account": "支付宝",
-      "type": "otc",
-      "name": "建信新兴市场优选混合(QDII)C",
-      "code": "018147",
-      "share_class": "C",
-      "unit_cost": 2.45337,
-      "shares": 171.1931
-    },
-    {
-      "account": "支付宝",
-      "type": "otc",
-      "name": "易方达全球成长精选混合(QDII)A",
-      "code": "012922",
-      "share_class": "A",
-      "unit_cost": 3.63052,
-      "shares": 333.2856
-    },
-    {
-      "account": "支付宝",
-      "type": "otc",
-      "name": "东方人工智能主题混合C",
-      "code": "017811",
-      "share_class": "C",
-      "unit_cost": 1.914757,
-      "shares": 4868.4973
-    },
-    {
-      "account": "支付宝",
-      "type": "otc",
-      "name": "易方达全球成长精选混合(QDII)C",
-      "code": "012922",
-      "share_class": "C",
-      "unit_cost": 2.444121,
-      "shares": 4472.0012
-    },
-    {
-      "account": "支付宝",
-      "type": "otc",
       "name": "国投瑞银白银期货(LOF)A",
       "code": "161226",
       "share_class": "A",
-      "unit_cost": 3.078397,
-      "shares": 64.9689
+      "unit_cost": 3.07838,
+      "shares": 64.9692
     },
     {
       "account": "支付宝",
@@ -159,8 +114,8 @@
       "name": "永赢高端装备智选混合A",
       "code": "015789",
       "share_class": "A",
-      "unit_cost": 1.661889,
-      "shares": 11192.245
+      "unit_cost": 1.654822,
+      "shares": 11240.0421
     },
     {
       "account": "支付宝",
@@ -168,8 +123,8 @@
       "name": "国泰国证有色金属行业指数(LOF)A",
       "code": "160221",
       "share_class": "A",
-      "unit_cost": 2.611539,
-      "shares": 3733.4958
+      "unit_cost": 2.530545,
+      "shares": 3852.9919
     },
     {
       "account": "支付宝",
@@ -177,8 +132,8 @@
       "name": "易方达科鑫量化选股股票A",
       "code": "022755",
       "share_class": "A",
-      "unit_cost": 2.169378,
-      "shares": 437.9135
+      "unit_cost": 2.181378,
+      "shares": 458.4258
     },
     {
       "account": "支付宝",
@@ -186,8 +141,53 @@
       "name": "易方达科鑫量化选股股票C",
       "code": "022755",
       "share_class": "C",
-      "unit_cost": 2.166696,
-      "shares": 438.4555
+      "unit_cost": 2.17863,
+      "shares": 459.004
+    },
+    {
+      "account": "支付宝",
+      "type": "otc",
+      "name": "建信新兴市场优选混合(QDII)A",
+      "code": "018147",
+      "share_class": "A",
+      "unit_cost": 2.461597,
+      "shares": 178.7458
+    },
+    {
+      "account": "支付宝",
+      "type": "otc",
+      "name": "建信新兴市场优选混合(QDII)C",
+      "code": "018147",
+      "share_class": "C",
+      "unit_cost": 2.459265,
+      "shares": 178.9153
+    },
+    {
+      "account": "支付宝",
+      "type": "otc",
+      "name": "易方达全球成长精选混合(QDII)A",
+      "code": "012922",
+      "share_class": "A",
+      "unit_cost": 3.642286,
+      "shares": 337.7
+    },
+    {
+      "account": "支付宝",
+      "type": "otc",
+      "name": "东方人工智能主题混合C",
+      "code": "017811",
+      "share_class": "C",
+      "unit_cost": 1.970255,
+      "shares": 4731.3618
+    },
+    {
+      "account": "支付宝",
+      "type": "otc",
+      "name": "易方达全球成长精选混合(QDII)C",
+      "code": "012922",
+      "share_class": "C",
+      "unit_cost": 2.446171,
+      "shares": 4476.4279
     }
   ],
   "board_map": {
