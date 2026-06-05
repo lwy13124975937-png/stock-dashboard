@@ -300,6 +300,26 @@ st.markdown(
     .kv { background: #f8fafc; border-radius: 10px; padding: 8px; }
     .kv-label { color: var(--muted); font-size: 12px; }
     .kv-value { font-weight: 800; margin-top: 2px; }
+    .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin: 8px 0 12px;
+    }
+    .summary-mini {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+    }
+    .summary-label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .summary-value { color: var(--text); font-size: 18px; font-weight: 850; line-height: 1.18; }
+    .clean-note {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+        margin: 4px 0 10px;
+    }
     div[data-testid="stDataFrame"] { font-size: 13px; }
     @media (max-width: 760px) {
         .block-container { padding-top: 2rem; padding-left: .72rem; padding-right: .72rem; }
@@ -323,6 +343,10 @@ st.markdown(
         .holding-list-value { font-size: 13px; }
         .holding-topvalue { font-size: 17px; }
         .account-title { font-size: 18px; margin: 12px 0 3px; }
+        .summary-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+        .summary-mini { padding: 8px 7px; border-radius: 10px; }
+        .summary-label { font-size: 11px; }
+        .summary-value { font-size: 15px; }
     }
     </style>
     """,
@@ -545,6 +569,29 @@ def card(label, value, sub="", tone="flat"):
         """,
         unsafe_allow_html=True,
     )
+
+
+def summary_strip(items):
+    html_items = []
+    for label, value, tone in items:
+        html_items.append(
+            f'<div class="summary-mini"><div class="summary-label">{esc(label)}</div>'
+            f'<div class="summary-value {tone}">{value}</div></div>'
+        )
+    st.markdown(f'<div class="summary-strip">{"".join(html_items)}</div>', unsafe_allow_html=True)
+
+
+def latest_data_date(df):
+    if df is None or "数据日期" not in df.columns:
+        return ""
+    dates = pd.to_datetime(df["数据日期"], errors="coerce").dropna()
+    if len(dates) == 0:
+        return ""
+    return str(dates.max().date())
+
+
+def is_weekend_today():
+    return datetime.now().weekday() >= 5
 
 
 def mini_table(rows):
@@ -797,11 +844,33 @@ def render_performance_curve(history, scope="total"):
         st.info("数据积累中，明日起逐步生成曲线。曲线从系统开始记录之日起，历史无法补全。")
         return
 
+    dfh["date_dt"] = pd.to_datetime(dfh["date"], errors="coerce")
+    dfh = dfh.dropna(subset=["date_dt"]).sort_values("date_dt")
+    dfh["date_label"] = dfh["date_dt"].dt.strftime("%m-%d")
+    start_label = dfh["date_label"].iloc[0]
+    end_label = dfh["date_label"].iloc[-1]
     fig = go.Figure()
     if mode == "收益金额曲线":
-        fig.add_trace(go.Scatter(x=dfh["date"], y=pd.to_numeric(dfh[profit_col], errors="coerce"), name=f"{label}收益金额", mode="lines+markers"))
-        fig.update_yaxes(title="收益金额（元）")
-        st.caption("收益金额曲线从系统开始记录之日起展示，历史无法补全。")
+        profits = pd.to_numeric(dfh[profit_col], errors="coerce")
+        fig.add_trace(go.Scatter(
+            x=dfh["date_label"],
+            y=profits,
+            name=f"{label}收益金额",
+            mode="lines+markers",
+            line=dict(color="#2563eb", width=3, shape="spline"),
+            marker=dict(size=5, color="#2563eb"),
+            fill="tozeroy",
+            fillcolor="rgba(37,99,235,.08)",
+            hovertemplate="%{x}<br>收益金额：%{y:,.0f} 元<extra></extra>",
+        ))
+        last_profit = profits.dropna().iloc[-1] if profits.notna().any() else float("nan")
+        summary_strip([
+            ("记录区间", esc(f"{start_label} 至 {end_label}"), "flat"),
+            ("最新累计收益", value_html(last_profit, " 元", signed=True), cls(last_profit)),
+            ("历史说明", "从记录日起", "flat"),
+        ])
+        st.markdown('<div class="clean-note">收益金额曲线只从系统开始记录后展示，之前的历史不会补填。</div>', unsafe_allow_html=True)
+        fig.update_yaxes(title="", zeroline=True, zerolinecolor="#cbd5e1", tickformat=",.0f")
     else:
         returns_raw = pd.to_numeric(dfh[return_col], errors="coerce")
         base_return = returns_raw.dropna().iloc[0] if returns_raw.notna().any() else 0
@@ -809,15 +878,48 @@ def render_performance_curve(history, scope="total"):
         hs300 = pd.to_numeric(dfh["hs300_close"], errors="coerce")
         base = hs300.dropna().iloc[0] if hs300.notna().any() else None
         hs300_ret = (hs300 / base - 1) * 100 if base else pd.Series([float("nan")] * len(dfh))
-        fig.add_trace(go.Scatter(x=dfh["date"], y=returns, name=f"{label}收益率", mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=dfh["date"], y=hs300_ret, name="沪深300基准", mode="lines+markers"))
+        fig.add_trace(go.Scatter(
+            x=dfh["date_label"],
+            y=returns,
+            name=f"{label}",
+            mode="lines+markers",
+            line=dict(color="#2563eb", width=3, shape="spline"),
+            marker=dict(size=5, color="#2563eb"),
+            fill="tozeroy",
+            fillcolor="rgba(37,99,235,.08)",
+            hovertemplate="%{x}<br>收益率：%{y:.2f}%<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=dfh["date_label"],
+            y=hs300_ret,
+            name="沪深300",
+            mode="lines+markers",
+            line=dict(color="#94a3b8", width=2, dash="dot", shape="spline"),
+            marker=dict(size=4, color="#94a3b8"),
+            hovertemplate="%{x}<br>沪深300：%{y:.2f}%<extra></extra>",
+        ))
         last_port = returns.dropna().iloc[-1] if returns.notna().any() else float("nan")
         last_idx = hs300_ret.dropna().iloc[-1] if hs300_ret.notna().any() else float("nan")
+        diff = last_port - last_idx if pd.notna(last_port) and pd.notna(last_idx) else float("nan")
+        verdict = f"{'跑赢' if diff >= 0 else '跑输'} {abs(diff):.1f}%" if pd.notna(diff) else "—"
+        summary_strip([
+            ("记录区间", esc(f"{start_label} 至 {end_label}"), "flat"),
+            ("本账户区间收益", f'<span class="{cls(last_port)}">{last_port:+.1f}%</span>' if pd.notna(last_port) else "—", cls(last_port)),
+            ("相对沪深300", f'<span class="{cls(diff)}">{esc(verdict)}</span>', cls(diff)),
+        ])
         if pd.notna(last_port) and pd.notna(last_idx):
-            diff = last_port - last_idx
-            st.caption(f"从记录日起，{label}相对沪深300：{'跑赢' if diff >= 0 else '跑输'} {abs(diff):.1f}%。收益率曲线按第一条记录归零，历史无法补全。")
-        fig.update_yaxes(title="收益率（%）")
-    fig.update_layout(height=280, margin=dict(l=10, r=10, t=20, b=10), legend=dict(orientation="h"))
+            st.markdown('<div class="clean-note">收益率曲线按第一条快照归零，只比较系统开始记录后的表现。</div>', unsafe_allow_html=True)
+        fig.update_yaxes(title="", ticksuffix="%", zeroline=True, zerolinecolor="#cbd5e1")
+    fig.update_layout(
+        height=245,
+        margin=dict(l=4, r=4, t=8, b=4),
+        legend=dict(orientation="h", y=-0.18, x=0, font=dict(size=12)),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+        xaxis=dict(type="category", showgrid=False, tickfont=dict(size=12)),
+        yaxis=dict(showgrid=True, gridcolor="#e7edf5", tickfont=dict(size=12)),
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -1842,6 +1944,9 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
 
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
     total_today = pd.to_numeric(show["今日估算盈亏"], errors="coerce").sum(min_count=1)
+    latest_date = latest_data_date(show)
+    today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "最新交易日变动"
+    today_hint = "" if today_label == "三账户当日收益" else f"<div class=\"holding-list-sub\">{esc(latest_date or '最新可用')}数据</div>"
     st.markdown(
         f"""
         <div class="holding-topbar">
@@ -1850,8 +1955,9 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
                 <div class="holding-topvalue">{esc(fmt_money(total_mv))}</div>
             </div>
             <div class="holding-topitem">
-                <div class="holding-toplabel">三账户当日收益</div>
+                <div class="holding-toplabel">{esc(today_label)}</div>
                 <div class="holding-topvalue {cls(total_today)}">{esc(signed_money(total_today))}</div>
+                {today_hint}
             </div>
         </div>
         """,
@@ -2617,14 +2723,40 @@ def render_home(df, exposure, board_source, snapshot_history):
     total_cost = df["成本额"].sum()
     today_pnl = pd.to_numeric(df["今日估算盈亏"], errors="coerce").sum(min_count=1)
     total_rate = total_pnl / total_cost * 100 if total_cost else 0
+    latest_date = latest_data_date(df)
+    today_string = datetime.now().strftime("%Y-%m-%d")
+    is_current_day = latest_date == today_string
+    pnl_label = "今日估算盈亏" if is_current_day and not is_weekend_today() else "最新交易日估算盈亏"
+    pnl_sub = "场外基金可能晚间更新" if pnl_label == "今日估算盈亏" else f"今天休市或未到当日数据，显示{latest_date or '最新可用'}数据"
 
     c = st.columns(3)
     with c[0]:
         card("总资产", esc(fmt_money(total_mv)), "当前三账户合计")
     with c[1]:
-        card("今日估算盈亏", value_html(today_pnl, " 元", signed=True), "场外基金可能晚间更新", cls(today_pnl))
+        card(pnl_label, value_html(today_pnl, " 元", signed=True), esc(pnl_sub), cls(today_pnl))
     with c[2]:
         card("累计盈亏", value_html(total_pnl, " 元", signed=True), f"{total_rate:+.1f}%", cls(total_pnl))
+
+    with st.expander("这笔变动来自哪里", expanded=False):
+        st.caption("这里按当前可取得的最新数据拆分。非交易日不会产生新的A股交易，场外/QDII按基金最新披露净值日期显示。")
+        by_acc = (
+            df.assign(_today=pd.to_numeric(df["今日估算盈亏"], errors="coerce"))
+            .groupby("account", as_index=False)["_today"].sum()
+            .rename(columns={"account": "账户", "_today": "估算变动"})
+        )
+        by_acc["估算变动"] = by_acc["估算变动"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f} 元")
+        st.dataframe(by_acc, use_container_width=True, hide_index=True)
+        top_change = df.copy()
+        top_change["_abs"] = pd.to_numeric(top_change["今日估算盈亏"], errors="coerce").abs()
+        top_change = top_change.sort_values("_abs", ascending=False).head(6)
+        top_change["估算变动"] = top_change["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f} 元")
+        st.dataframe(
+            top_change[["account", "name", "估算变动", "当日收益说明", "数据日期"]].rename(
+                columns={"account": "账户", "name": "名称"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     acc_cols = st.columns(3)
     for col, acc in zip(acc_cols, ["银河证券", "东方财富", "支付宝"]):
@@ -2771,7 +2903,7 @@ def render_radar(live, board_source, using_old):
     risk_notice(st)
 
 
-def render_my_boards(exposure, fund_map, recent_note):
+def render_my_boards(exposure, fund_map, recent_note, df):
     render_glossary(st, PAGE_TERMS["mine"])
     if len(exposure) == 0:
         st.error("暂无持仓板块数据。")
@@ -2814,8 +2946,8 @@ def render_my_boards(exposure, fund_map, recent_note):
 
     with st.expander("基金穿透明细", expanded=False):
         fund_rows = []
-        fund_holdings = [h for h in HOLDINGS if str(h.get("type", "")) in ("lof", "otc")]
-        for holding in fund_holdings:
+        fund_holdings = df[df["type"].astype(str).isin(["lof", "otc"])].copy() if df is not None and len(df) else pd.DataFrame()
+        for _, holding in fund_holdings.iterrows():
             code = str(holding.get("code", ""))
             if not code:
                 continue
@@ -2827,43 +2959,86 @@ def render_my_boards(exposure, fund_map, recent_note):
             override = fund_board_override(clean_code)
             if override:
                 main_board = override[0]
+                group = "A股可穿透"
                 note = "境内A股基金，根据前十大重仓估算。"
             elif is_true_non_a_fund(clean_code):
                 main_board = "境外/非A股"
+                group = "境外/非A股"
                 note = "该基金主要投资非A股市场，无法直接使用A股板块温度衡量；净值会按基金披露节奏滞后更新。"
             elif valid_board_name(board):
                 main_board = board
+                group = "A股可穿透"
                 note = "根据前十大重仓估算。"
             else:
                 main_board = "穿透暂缺"
+                group = "穿透暂缺"
                 note = "这是境内基金，但暂时没有取得足够A股重仓穿透数据，先不做盘中估值。"
             fund_rows.append({
                 "基金": f"{holding['name']} {code}",
+                "市值": to_num(holding.get("市值", float("nan"))),
                 "主要板块": main_board,
+                "分组": group,
                 "估算占比": extract_weight_text(detail),
                 "说明": note,
                 "明细": detail,
             })
         if fund_rows:
-            for item in fund_rows:
-                st.markdown(
-                    f"""
-                    <div class="holding-card">
-                        <div class="holding-title">{esc(item["基金"])}</div>
-                        <div class="holding-meta">主要板块：{esc(item["主要板块"])}</div>
-                        <div class="kv-grid">
-                            <div class="kv"><div class="kv-label">估算占比</div><div class="kv-value">{esc(item["估算占比"])}</div></div>
-                            <div class="kv"><div class="kv-label">说明</div><div class="kv-value">{esc(item["说明"])}</div></div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+            fund_df = pd.DataFrame(fund_rows)
+            total_fund_mv = pd.to_numeric(fund_df["市值"], errors="coerce").sum()
+            a_count = int((fund_df["分组"] == "A股可穿透").sum())
+            foreign_count = int((fund_df["分组"] == "境外/非A股").sum())
+            missing_count = int((fund_df["分组"] == "穿透暂缺").sum())
+            summary_strip([
+                ("A股可穿透", esc(f"{a_count} 只"), "flat"),
+                ("境外/非A股", esc(f"{foreign_count} 只"), "flat"),
+                ("穿透暂缺", esc(f"{missing_count} 只"), "flat"),
+            ])
+            pie_df = (
+                fund_df.assign(市值_num=pd.to_numeric(fund_df["市值"], errors="coerce").fillna(0))
+                .groupby("主要板块", as_index=False)["市值_num"].sum()
+                .sort_values("市值_num", ascending=False)
+            )
+            pie_df = pie_df[pie_df["市值_num"] > 0]
+            if len(pie_df) and total_fund_mv > 0:
+                fig = go.Figure(go.Pie(
+                    labels=pie_df["主要板块"],
+                    values=pie_df["市值_num"],
+                    hole=.58,
+                    sort=False,
+                    textinfo="label+percent",
+                    textposition="outside",
+                    marker=dict(line=dict(color="#ffffff", width=2)),
+                    hovertemplate="%{label}<br>市值：%{value:,.0f} 元<br>占基金市值：%{percent}<extra></extra>",
+                ))
+                fig.update_layout(
+                    height=270,
+                    margin=dict(l=4, r=4, t=8, b=8),
+                    showlegend=False,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    uniformtext_minsize=11,
+                    uniformtext_mode="hide",
                 )
+                st.plotly_chart(fig, use_container_width=True)
+                st.markdown('<div class="clean-note">上图按基金持仓市值汇总主导板块；“境外/非A股”和“穿透暂缺”会单独保留，不强行塞进A股板块。</div>', unsafe_allow_html=True)
+            table = fund_df.copy()
+            table["市值"] = table["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}")
+            st.dataframe(
+                table[["基金", "市值", "主要板块", "估算占比", "分组"]].rename(columns={"分组": "状态"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+            with st.expander("查看原始重仓明细", expanded=False):
+                for item in fund_rows:
+                    detail_text = str(item.get("明细", "") or "").strip()
+                    st.markdown(f"**{item['基金']}**｜{item['主要板块']}")
+                    st.caption(item["说明"])
+                    if detail_text:
+                        st.write(detail_text[:700] + ("..." if len(detail_text) > 700 else ""))
+                    else:
+                        st.caption("暂无原始重仓明细。")
         else:
             st.info("暂无基金穿透明细。")
-        for _, r in exposure[exposure["说明"].astype(str) != ""].iterrows():
-            st.markdown(f"**{r['板块']}**")
-            st.write(r["说明"][:900] + ("..." if len(r["说明"]) > 900 else ""))
     risk_notice(st)
 
 
@@ -2965,6 +3140,6 @@ elif page == "持仓":
 elif page == "板块雷达":
     render_radar(live, board_source, using_old_boards)
 elif page == "我的板块":
-    render_my_boards(exposure, fund_map, recent_note)
+    render_my_boards(exposure, fund_map, recent_note, df)
 else:
     render_advanced(df, board_source, using_old_boards, fund_map)
