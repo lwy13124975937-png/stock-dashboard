@@ -2,9 +2,12 @@
 """Three-account holdings import parser, code matching, and preview builder."""
 import json
 import re
+import ast
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 import pandas as pd
+import requests
 
 from alipay_json_import import infer_share_class, normalize_fund_name
 from holding_import import clean_code
@@ -245,34 +248,145 @@ def _score_match(item, entry, account):
         score += 8
     if entry.get("source") == "现有持仓":
         score += 4
+    raw_item = _norm(item.get("name", ""))
+    raw_entry = _norm(entry.get("name", ""))
+    if raw_item and raw_item == raw_entry:
+        score += 15
+    if "后端" in str(entry.get("name", "")) and "后端" not in str(item.get("name", "")):
+        score -= 12
     return score
+
+
+def _best_code_from_candidates(candidates, min_score=72.0, margin=3.0):
+    candidates = [(score, code, source) for score, code, source in candidates if code and score >= min_score]
+    if not candidates:
+        return "", ""
+    candidates.sort(reverse=True)
+    best_score, best_code, best_source = candidates[0]
+    close_candidates = [item for item in candidates if best_score - item[0] < margin]
+    if any(code != best_code for _, code, _ in close_candidates):
+        return "", ""
+    return best_code, best_source
+
+
+@lru_cache(maxsize=1)
+def eastmoney_fund_search_entries():
+    url = "https://fund.eastmoney.com/js/fundcode_search.js"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://fund.eastmoney.com/"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    text = resp.text
+    body = text[text.find("["):text.rfind("]") + 1]
+    rows = ast.literal_eval(body)
+    entries = []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            continue
+        code = clean_code(row[0])
+        name = str(row[2] or "").strip()
+        if code and name:
+            entries.append({
+                "name": name,
+                "code": code,
+                "account": "通用",
+                "type": "otc",
+                "share_class": infer_share_class(name),
+                "source": "天天基金代码表",
+            })
+    return entries
+
+
+@lru_cache(maxsize=512)
+def sina_suggest_entries(name):
+    name = str(name or "").strip()
+    if not name:
+        return []
+    url = "https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15,21,22,23&name=suggestdata"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
+    resp = requests.get(url, headers=headers, params={"key": name}, timeout=10)
+    resp.raise_for_status()
+    resp.encoding = "gbk"
+    m = re.search(r'var suggestdata="(.*)";?', resp.text.strip())
+    text = m.group(1) if m else ""
+    entries = []
+    for item in text.split(";"):
+        parts = item.split(",")
+        if len(parts) < 5:
+            continue
+        code = clean_code(parts[2])
+        display_name = str(parts[4] or parts[0] or "").strip()
+        if not code or not display_name:
+            continue
+        htype = "stock"
+        if str(parts[1]) in {"21", "22", "23"} or code.startswith(("1", "5")):
+            htype = "lof"
+        entries.append({
+            "name": display_name,
+            "code": code,
+            "account": "通用",
+            "type": htype,
+            "share_class": infer_share_class(display_name),
+            "source": "新浪名称搜索",
+        })
+    return entries
+
+
+def external_lookup_code(item, account):
+    candidates = []
+    item_name = str(item.get("name", "") or "")
+    if account == "支付宝" or re.search(r"基金|混合|股票|债券|指数|QDII|LOF|ETF", item_name, re.I):
+        try:
+            for entry in eastmoney_fund_search_entries():
+                score = _score_match(item, entry, "通用")
+                if score >= 78:
+                    candidates.append((score, clean_code(entry["code"]), entry["source"]))
+        except Exception:
+            pass
+    try:
+        for entry in sina_suggest_entries(item_name):
+            score = _score_match(item, entry, "通用")
+            if account == "支付宝" and entry.get("type") == "stock":
+                score -= 20
+            if account == "东方财富" and entry.get("type") in {"stock", "lof"}:
+                score += 3
+            candidates.append((score, clean_code(entry["code"]), entry["source"]))
+    except Exception:
+        pass
+    code, source = _best_code_from_candidates(candidates, min_score=78, margin=2.5)
+    return {"code": code, "source": source}
+
+
+def local_lookup_code(item, account, records):
+    candidates = []
+    for entry in _map_entries(records):
+        score = _score_match(item, entry, account)
+        if score >= 72:
+            candidates.append((score, clean_code(entry.get("code", "")), entry.get("source", "本地映射")))
+    code, source = _best_code_from_candidates(candidates, min_score=72, margin=3)
+    return {"code": code, "source": source}
 
 
 def match_code(item, account, records):
     direct = clean_code(item.get("code", ""))
     if direct:
         return direct
-    candidates = []
-    for entry in _map_entries(records):
-        score = _score_match(item, entry, account)
-        if score >= 72:
-            candidates.append((score, clean_code(entry.get("code", ""))))
-    if not candidates:
-        return ""
-    candidates.sort(reverse=True)
-    best_score, best_code = candidates[0]
-    if len(candidates) > 1 and best_score - candidates[1][0] < 3:
-        return ""
-    return best_code
+    local = local_lookup_code(item, account, records)
+    if local["code"]:
+        return local["code"]
+    external = external_lookup_code(item, account)
+    return external["code"]
 
 
 def code_match_info(item, account, records):
     direct = clean_code(item.get("code", ""))
     if direct:
         return {"code": direct, "status": "输入自带代码", "needs_manual": False}
-    code = match_code(item, account, records)
-    if code:
-        return {"code": code, "status": "已自动匹配", "needs_manual": False}
+    local = local_lookup_code(item, account, records)
+    if local["code"]:
+        return {"code": local["code"], "status": f"已自动匹配（{local['source']}）", "needs_manual": False}
+    external = external_lookup_code(item, account)
+    if external["code"]:
+        return {"code": external["code"], "status": f"已联网查到代码（{external['source']}）", "needs_manual": False}
     return {"code": "", "status": "未匹配到代码，请手填一次", "needs_manual": True}
 
 
