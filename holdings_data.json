@@ -55,51 +55,6 @@
       "shares": 587.0
     },
     {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "电网设备ETF华夏",
-      "code": "159326",
-      "share_class": "",
-      "unit_cost": 2.083,
-      "shares": 1500.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "港美互联网LOF",
-      "code": "160644",
-      "share_class": "",
-      "unit_cost": 1.662,
-      "shares": 9053.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "港股小盘LOF",
-      "code": "161124",
-      "share_class": "",
-      "unit_cost": 1.054,
-      "shares": 5630.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "国投白银LOF",
-      "code": "161226",
-      "share_class": "",
-      "unit_cost": 2.439,
-      "shares": 525.0
-    },
-    {
-      "account": "银河证券",
-      "type": "lof",
-      "name": "财通福享混合LOF",
-      "code": "501026",
-      "share_class": "",
-      "unit_cost": 2.346,
-      "shares": 960.0
-    },
-    {
       "account": "支付宝",
       "type": "otc",
       "name": "国投瑞银白银期货(LOF)A",
@@ -188,6 +143,60 @@
       "share_class": "C",
       "unit_cost": 2.446171,
       "shares": 4476.4279
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "电网设备ETF华夏",
+      "code": "159326",
+      "share_class": "",
+      "unit_cost": 2.083,
+      "shares": 1500.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "港美互联网LOF",
+      "code": "160644",
+      "share_class": "",
+      "unit_cost": 1.661966,
+      "shares": 9053.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "港股小盘LOF",
+      "code": "161124",
+      "share_class": "",
+      "unit_cost": 1.054,
+      "shares": 5630.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "国投白银LOF",
+      "code": "161226",
+      "share_class": "",
+      "unit_cost": 2.439,
+      "shares": 525.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "财通福享混合LOF",
+      "code": "501026",
+      "share_class": "",
+      "unit_cost": 2.346,
+      "shares": 960.0
+    },
+    {
+      "account": "银河证券",
+      "type": "lof",
+      "name": "海外科技LOF",
+      "code": "501312",
+      "share_class": "",
+      "unit_cost": 2.460907,
+      "shares": 6122.0
     }
   ],
   "board_map": {
