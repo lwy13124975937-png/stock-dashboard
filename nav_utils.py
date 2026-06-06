@@ -516,9 +516,9 @@ def get_otc_qdii_nav(code, classify="场外基金-QDII/境外"):
     return cached_result(code, classify, "；".join(errors))
 
 
-def get_nav(code, holding_type="", name="", cache_key=None):
-    """统一获取最新价格/净值。cache_key 由页面传入交易日阶段，用于Streamlit外层缓存失效。"""
-    _ = cache_key
+@lru_cache(maxsize=1024)
+def _get_nav_cached(code, holding_type="", name="", cache_key=None):
+    """按交易日阶段缓存单只标的，避免页面 rerun 时重复打外部接口。"""
     code = clean_code(code)
     classify, reason = classify_fund(code, holding_type, name)
     if classify == "A股股票":
@@ -535,6 +535,16 @@ def get_nav(code, holding_type="", name="", cache_key=None):
         result.reason = (result.reason + "；" if result.reason else "") + reason
         return result
     return cached_result(code, classify, reason)
+
+
+def get_nav(code, holding_type="", name="", cache_key=None):
+    """统一获取最新价格/净值。cache_key 由页面传入交易日阶段，用于缓存失效。"""
+    return _get_nav_cached(
+        clean_code(code),
+        str(holding_type or ""),
+        str(name or ""),
+        str(cache_key or market_cache_key()),
+    )
 
 
 def calc_daily_return(result, shares):

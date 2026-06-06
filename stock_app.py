@@ -1520,6 +1520,19 @@ def build_recent_sentiment(history, min_days=3, window=5):
     return out, f"基于最近 {min(window, len(dates))} 个交易日板块快照。"
 
 
+@st.cache_data(ttl=900)
+def load_board_context(cache_key=None):
+    _ = cache_key
+    try:
+        board_history = load_board_history()
+        recent_sentiment, recent_note = build_recent_sentiment(board_history)
+        raw_boards, board_source, using_old_boards = boards_live()
+        live = score_boards(raw_boards, board_history)
+        return board_history, recent_sentiment, recent_note, live, board_source, using_old_boards
+    except Exception as e:
+        return pd.DataFrame(), {}, f"历史不足：{e}", None, f"失败：{e}", True
+
+
 def resolve_holding_board(r, fund_map):
     code = clean_stock_code(r["code"])
     base_tag, base_board = BOARD_MAP.get(code, (r["name"], "None"))
@@ -1572,21 +1585,30 @@ def cached_get_nav(code, holding_type, name, cache_key):
 @st.cache_data(ttl=900)
 def compute(cache_key=None):
     cache_key = cache_key or market_cache_key()
-    fund_map_local = load_fund_board_map()
     holdings = list(HOLDINGS)
     nav_results = {}
+    nav_keys = {
+        idx: (
+            clean_stock_code(holding.get("code", "")),
+            str(holding.get("type", "") or ""),
+            str(holding.get("name", "") or ""),
+        )
+        for idx, holding in enumerate(holdings)
+    }
+    unique_keys = list(dict.fromkeys(nav_keys.values()))
 
-    def fetch_nav_result(idx, holding):
-        return idx, get_nav(holding["code"], holding.get("type", ""), holding.get("name", ""), cache_key=cache_key)
+    def fetch_nav_result(nav_key):
+        code, holding_type, name = nav_key
+        return nav_key, get_nav(code, holding_type, name, cache_key=cache_key)
 
-    if holdings:
-        workers = min(8, len(holdings))
+    if unique_keys:
+        workers = min(8, len(unique_keys))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(fetch_nav_result, idx, holding): idx for idx, holding in enumerate(holdings)}
+            futures = {pool.submit(fetch_nav_result, nav_key): nav_key for nav_key in unique_keys}
             for future in as_completed(futures):
                 try:
-                    idx, result = future.result()
-                    nav_results[idx] = result
+                    nav_key, result = future.result()
+                    nav_results[nav_key] = result
                 except Exception as e:
                     nav_results[futures[future]] = e
 
@@ -1596,7 +1618,7 @@ def compute(cache_key=None):
         r["share_class"] = str(h.get("share_class", "") or "")
         r["unit_cost"] = float(unit_cost_of(h) or 0)
         try:
-            nav_result = nav_results.get(idx)
+            nav_result = nav_results.get(nav_keys.get(idx))
             if isinstance(nav_result, Exception) or nav_result is None:
                 raise nav_result or RuntimeError("行情暂不可用")
             if h["type"] == "otc":
@@ -2845,7 +2867,7 @@ def account_import_widget():
             render_github_sync_diag(expanded=False)
 
 
-def render_home(df, exposure, board_source, snapshot_history):
+def render_home(df, exposure, board_source, snapshot_history, using_old_boards=False):
     total_mv = df["市值"].sum()
     total_pnl = df["盈亏"].sum()
     total_cost = df["成本额"].sum()
@@ -3270,36 +3292,33 @@ page = st.segmented_control(
     **page_kwargs,
 )
 
-snapshot_history = load_snapshot_history()
-fund_map = load_fund_board_map()
+cache_key = market_cache_key()
+snapshot_history = load_snapshot_history() if page in ("首页", "持仓") else pd.DataFrame()
+fund_map = load_fund_board_map() if page in ("首页", "持仓", "我的板块", "高级功能") else {}
 
 if page == "高级功能":
     render_advanced(pd.DataFrame(), "未加载", True, fund_map)
     st.stop()
 
-with st.spinner("正在更新持仓行情和板块温度..."):
-    df = compute(market_cache_key())
-    try:
-        board_history = load_board_history()
-        recent_sentiment, recent_note = build_recent_sentiment(board_history)
-        raw_boards, board_source, using_old_boards = boards_live()
-        live = score_boards(raw_boards, board_history)
-    except Exception as e:
-        board_history = pd.DataFrame()
-        recent_sentiment, recent_note = {}, f"历史不足：{e}"
-        live = None
-        board_source = f"失败：{e}"
-        using_old_boards = True
+if page == "板块雷达":
+    with st.spinner("正在更新板块温度..."):
+        board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = load_board_context(cache_key)
+    render_radar(live, board_source, using_old_boards)
+    st.stop()
 
-exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
+with st.spinner("正在更新持仓行情..."):
+    df = compute(cache_key)
+
+with st.spinner("正在更新板块温度..."):
+    board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = load_board_context(cache_key)
 
 if page == "首页":
-    render_home(df, exposure, board_source, snapshot_history)
+    exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
+    render_home(df, exposure, board_source, snapshot_history, using_old_boards)
 elif page == "持仓":
     render_holdings(df, snapshot_history, fund_map, live, board_history)
-elif page == "板块雷达":
-    render_radar(live, board_source, using_old_boards)
 elif page == "我的板块":
+    exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
     render_my_boards(exposure, fund_map, recent_note, df)
 else:
     render_advanced(df, board_source, using_old_boards, fund_map)
