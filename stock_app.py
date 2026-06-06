@@ -1839,9 +1839,14 @@ def health_summary(df, board_source, using_old):
         conn.close()
     except Exception:
         board_date = ""
-    stock_dates = df[df["type"] == "stock"]["数据日期"].dropna().astype(str)
-    lof_dates = df[df["type"] == "lof"]["数据日期"].dropna().astype(str)
-    otc_dates = df[df["type"] == "otc"]["数据日期"].dropna().astype(str)
+    if df is None or len(df) == 0 or "type" not in df.columns or "数据日期" not in df.columns:
+        stock_dates = pd.Series(dtype=str)
+        lof_dates = pd.Series(dtype=str)
+        otc_dates = pd.Series(dtype=str)
+    else:
+        stock_dates = df[df["type"] == "stock"]["数据日期"].dropna().astype(str)
+        lof_dates = df[df["type"] == "lof"]["数据日期"].dropna().astype(str)
+        otc_dates = df[df["type"] == "otc"]["数据日期"].dropna().astype(str)
     today_logs = log[log["update_time"].astype(str).str.startswith(datetime.now().strftime("%Y-%m-%d"))] if len(log) else pd.DataFrame()
     failed = today_logs[today_logs["status"] != "成功"] if len(today_logs) else pd.DataFrame()
     success = today_logs[today_logs["status"] == "成功"] if len(today_logs) else pd.DataFrame()
@@ -3141,16 +3146,22 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                         top_df,
                         pd.DataFrame([{"主要板块": "其他", "市值_num": other_value, "占基金市值": other_value / total_fund_mv * 100}]),
                     ], ignore_index=True)
-                pull = [0.035 if i == 0 else 0 for i in range(len(chart_df))]
+                chart_df["外侧标注"] = chart_df.apply(
+                    lambda row: f"{row['主要板块']}<br>{row['占基金市值']:.1f}%" if row["占基金市值"] >= 4 else "",
+                    axis=1,
+                )
+                pull = [0.025 if i == 0 else 0 for i in range(len(chart_df))]
                 fig = go.Figure(go.Pie(
                     labels=chart_df["主要板块"],
                     values=chart_df["市值_num"],
+                    text=chart_df["外侧标注"],
                     hole=.58,
                     sort=False,
                     pull=pull,
-                    textinfo="label+percent",
+                    textinfo="text",
                     textposition="outside",
                     insidetextorientation="horizontal",
+                    automargin=True,
                     marker=dict(
                         colors=["#1f5fbf", "#7aa6dc", "#f59e0b", "#2ca58d", "#ef6f6c", "#8b5cf6", "#64748b", "#cbd5e1"],
                         line=dict(color="white", width=2),
@@ -3159,8 +3170,8 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                 ))
                 fig.update_layout(
                     template="simple_white",
-                    height=300,
-                    margin=dict(l=34, r=34, t=12, b=8),
+                    height=320,
+                    margin=dict(l=48, r=48, t=8, b=8),
                     showlegend=False,
                     legend=dict(
                         orientation="v",
@@ -3209,32 +3220,16 @@ def render_my_boards(exposure, fund_map, recent_note, df):
 
 def render_advanced(df, board_source, using_old, fund_map):
     st.caption("这里放维护功能，日常看盘不用打开。")
-    section = st.selectbox("高级功能", ["持仓管理", "持仓导入", "数据更新日志", "基金穿透明细", "JSON/CSV 示例"], label_visibility="collapsed")
+    section = st.selectbox("高级功能", ["持仓管理", "持仓导入", "基金穿透明细"], label_visibility="collapsed")
     if section == "持仓管理":
         render_holding_manager()
     elif section == "持仓导入":
         account_import_widget()
-    elif section == "数据更新日志":
-        health = health_summary(df, board_source, using_old)
-        st.dataframe(health, use_container_width=True, hide_index=True)
-        log = load_update_log()
-        if len(log):
-            st.dataframe(log[["update_time", "task_name", "status", "data_date", "retry_count", "error_msg"]], use_container_width=True, hide_index=True)
-        else:
-            st.warning("暂无 update_log 记录。")
-    elif section == "基金穿透明细":
+    else:
         rows = []
         for code, fm in fund_map.items():
             rows.append({"代码": code, "主板块": fm.get("main_board", ""), "明细": fm.get("detail", "")})
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    else:
-        with st.expander("通用 JSON / CSV 示例", expanded=True):
-            st.code(SAMPLE_JSON, language="json")
-            st.code(SAMPLE_CSV, language="csv")
-        with st.expander("视觉模型提示词", expanded=False):
-            st.code(VISION_PROMPT_EASTMONEY_A_STOCK, language="text")
-            st.code(VISION_PROMPT_GALAXY_LOF, language="text")
-            st.code(VISION_PROMPT_ALIPAY_OTC, language="text")
     risk_notice(st)
 
 
