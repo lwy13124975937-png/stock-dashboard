@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 
 for v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
     os.environ.pop(v, None)
@@ -25,6 +26,9 @@ import pandas as pd
 import requests
 
 from project_paths import NAV_CACHE_FILE
+
+NAV_LOGIC_VERSION = "nav-20260606-v2"
+NAV_CACHE_LOCK = Lock()
 
 
 @dataclass
@@ -56,7 +60,7 @@ def market_cache_key():
         phase = "closed"
     else:
         phase = "after_close" if (now.hour, now.minute) >= (15, 5) else "intraday"
-    return f"{now:%Y-%m-%d}:{phase}"
+    return f"{now:%Y-%m-%d}:{phase}:{NAV_LOGIC_VERSION}"
 
 
 def clean_code(code):
@@ -109,9 +113,10 @@ def write_nav_cache(result):
     if result.nav is None or result.cache:
         return
     try:
-        data = read_nav_cache()
-        data[result.code] = asdict(result) | {"saved_at": china_now().isoformat(timespec="seconds")}
-        Path(NAV_CACHE_FILE).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        with NAV_CACHE_LOCK:
+            data = read_nav_cache()
+            data[result.code] = asdict(result) | {"saved_at": china_now().isoformat(timespec="seconds")}
+            Path(NAV_CACHE_FILE).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 

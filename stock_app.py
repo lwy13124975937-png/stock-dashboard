@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
@@ -612,6 +613,21 @@ def effective_daily_sum(df, target_date=None):
     if part is None or len(part) == 0:
         return float("nan")
     return pd.to_numeric(part["今日估算盈亏"], errors="coerce").sum(min_count=1)
+
+
+def latest_available_daily_sum(df):
+    if df is None or len(df) == 0:
+        return float("nan")
+    return pd.to_numeric(df["今日估算盈亏"], errors="coerce").sum(min_count=1)
+
+
+def latest_available_daily_frame(df):
+    if df is None or len(df) == 0:
+        return df
+    out = df.copy()
+    out["_data_date_sort"] = pd.to_datetime(out["数据日期"], errors="coerce")
+    out["_abs_today"] = pd.to_numeric(out["今日估算盈亏"], errors="coerce").abs()
+    return out.sort_values(["_data_date_sort", "_abs_today"], ascending=[False, False])
 
 
 def is_weekend_today():
@@ -1530,15 +1546,34 @@ def cached_get_nav(code, holding_type, name, cache_key):
 
 @st.cache_data(ttl=900)
 def compute(cache_key=None):
-    _ = cache_key
+    cache_key = cache_key or market_cache_key()
     fund_map_local = load_fund_board_map()
+    holdings = list(HOLDINGS)
+    nav_results = {}
+
+    def fetch_nav_result(idx, holding):
+        return idx, get_nav(holding["code"], holding.get("type", ""), holding.get("name", ""), cache_key=cache_key)
+
+    if holdings:
+        workers = min(8, len(holdings))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(fetch_nav_result, idx, holding): idx for idx, holding in enumerate(holdings)}
+            for future in as_completed(futures):
+                try:
+                    idx, result = future.result()
+                    nav_results[idx] = result
+                except Exception as e:
+                    nav_results[futures[future]] = e
+
     rows = []
-    for h in HOLDINGS:
+    for idx, h in enumerate(holdings):
         r = dict(h)
         r["share_class"] = str(h.get("share_class", "") or "")
         r["unit_cost"] = float(unit_cost_of(h) or 0)
         try:
-            nav_result = cached_get_nav(h["code"], h.get("type", ""), h.get("name", ""), market_cache_key())
+            nav_result = nav_results.get(idx)
+            if isinstance(nav_result, Exception) or nav_result is None:
+                raise nav_result or RuntimeError("行情暂不可用")
             if h["type"] == "otc":
                 shares = float(h.get("shares", 0) or 0)
                 cost_price = float(unit_cost_of(h) or 0)
@@ -2007,9 +2042,9 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
 
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
     latest_date = latest_data_date(show)
-    total_today = effective_daily_sum(show, latest_date)
-    today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "最新交易日变动"
-    today_hint = f"{latest_date or '最新可用'}数据"
+    total_today = latest_available_daily_sum(show)
+    today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "三账户最新可得变动"
+    today_hint = "各持仓按自身最新披露/行情日汇总"
     st.markdown(
         f"""
         <div class="holding-topbar">
@@ -2092,10 +2127,10 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
             )
         st.markdown("".join(rows_html), unsafe_allow_html=True)
         sub_mv = pd.to_numeric(sub["市值"], errors="coerce").sum()
-        sub_today = effective_daily_sum(sub, latest_date)
+        sub_today = latest_available_daily_sum(sub)
         sub_profit = pd.to_numeric(sub["盈亏"], errors="coerce").sum()
         st.markdown(
-            f'<div class="holding-subtotal">{esc(account)} 小计：市值 {esc(fmt_money(sub_mv))} ｜ {esc(latest_date or "最新")}变动 {esc(signed_money(sub_today))} ｜ 持有收益 {esc(signed_money(sub_profit))}</div>',
+            f'<div class="holding-subtotal">{esc(account)} 小计：市值 {esc(fmt_money(sub_mv))} ｜ 最新可得变动 {esc(signed_money(sub_today))} ｜ 持有收益 {esc(signed_money(sub_profit))}</div>',
             unsafe_allow_html=True,
         )
     risk_notice(st)
@@ -2786,11 +2821,11 @@ def render_home(df, exposure, board_source, snapshot_history):
     total_cost = df["成本额"].sum()
     total_rate = total_pnl / total_cost * 100 if total_cost else 0
     latest_date = latest_data_date(df)
-    today_pnl = effective_daily_sum(df, latest_date)
+    today_pnl = latest_available_daily_sum(df)
     today_string = datetime.now().strftime("%Y-%m-%d")
     is_current_day = latest_date == today_string
-    pnl_label = "今日估算盈亏" if is_current_day and not is_weekend_today() else "最新交易日估算盈亏"
-    pnl_sub = f"仅汇总{latest_date or '最新可用'}披露/行情数据"
+    pnl_label = "今日估算盈亏" if is_current_day and not is_weekend_today() else "最新可得估算盈亏"
+    pnl_sub = "每只持仓按自身最新披露/行情日汇总，QDII滞后属正常"
 
     c = st.columns(3)
     with c[0]:
@@ -2801,8 +2836,8 @@ def render_home(df, exposure, board_source, snapshot_history):
         card("累计盈亏", value_html(total_pnl, " 元", signed=True), f"{total_rate:+.1f}%", cls(total_pnl))
 
     with st.expander("这笔变动来自哪里", expanded=False):
-        st.caption(f"首页数字只汇总 {latest_date or '最新可用'} 这一天的数据；其他披露日期会单独列出，不混进当日合计。")
-        active = effective_daily_frame(df, latest_date)
+        st.caption("首页数字按每只持仓当前最新可用数据汇总；QDII/海外基金披露日可能比A股基金晚一到两天，这里会如实标日期。")
+        active = latest_available_daily_frame(df)
         by_acc = (
             active.assign(_today=pd.to_numeric(active["今日估算盈亏"], errors="coerce"))
             .groupby("account", as_index=False)["_today"].sum()
@@ -2811,8 +2846,6 @@ def render_home(df, exposure, board_source, snapshot_history):
         by_acc["估算变动"] = by_acc["估算变动"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
         st.dataframe(by_acc, use_container_width=True, hide_index=True)
         top_change = active.copy()
-        top_change["_abs"] = pd.to_numeric(top_change["今日估算盈亏"], errors="coerce").abs()
-        top_change = top_change.sort_values("_abs", ascending=False)
         top_change["估算变动"] = top_change["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
         st.dataframe(
             top_change[["account", "name", "估算变动", "当日收益说明", "数据日期"]].rename(
@@ -2821,19 +2854,6 @@ def render_home(df, exposure, board_source, snapshot_history):
             use_container_width=True,
             hide_index=True,
         )
-        other = df[data_date_text_series(df) != latest_date].copy()
-        if len(other):
-            other["_abs"] = pd.to_numeric(other["今日估算盈亏"], errors="coerce").abs()
-            other = other.sort_values(["数据日期", "_abs"], ascending=[False, False])
-            other["估算变动"] = other["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
-            st.caption("以下是其他披露日期的数据，仅供核对，不计入上面的最新交易日合计。")
-            st.dataframe(
-                other[["account", "name", "估算变动", "当日收益说明", "数据日期"]].rename(
-                    columns={"account": "账户", "name": "名称"}
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
 
     acc_cols = st.columns(3)
     for col, acc in zip(acc_cols, ["银河证券", "东方财富", "支付宝"]):
