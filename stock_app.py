@@ -407,7 +407,7 @@ def signed_money(v):
         n = float(v)
         if pd.isna(n):
             return "—"
-        return f"{n:+,.0f} 元"
+        return f"{n:+,.2f} 元"
     except Exception:
         return "—"
 
@@ -506,7 +506,7 @@ def fmt_money(v):
         n = float(v)
         if pd.isna(n):
             return "—"
-        return f"{n:,.0f} 元"
+        return f"{n:,.2f} 元"
     except Exception:
         return "—"
 
@@ -552,7 +552,7 @@ def value_html(v, suffix="", signed=False):
         n = float(v)
         if pd.isna(n):
             return "—"
-        text = f"{n:+,.0f}{suffix}" if signed else f"{n:,.0f}{suffix}"
+        text = f"{n:+,.2f}{suffix}" if signed else f"{n:,.2f}{suffix}"
         return f'<span class="{cls(n)}">{esc(text)}</span>'
     except Exception:
         return esc(v)
@@ -588,6 +588,30 @@ def latest_data_date(df):
     if len(dates) == 0:
         return ""
     return str(dates.max().date())
+
+
+def data_date_text_series(df):
+    if df is None or "数据日期" not in df.columns:
+        return pd.Series([], dtype="object")
+    dates = pd.to_datetime(df["数据日期"], errors="coerce")
+    return dates.dt.strftime("%Y-%m-%d")
+
+
+def effective_daily_frame(df, target_date=None):
+    if df is None or len(df) == 0:
+        return df
+    target = target_date or latest_data_date(df)
+    if not target:
+        return df.iloc[0:0]
+    dates = data_date_text_series(df)
+    return df[dates == target].copy()
+
+
+def effective_daily_sum(df, target_date=None):
+    part = effective_daily_frame(df, target_date)
+    if part is None or len(part) == 0:
+        return float("nan")
+    return pd.to_numeric(part["今日估算盈亏"], errors="coerce").sum(min_count=1)
 
 
 def is_weekend_today():
@@ -990,7 +1014,7 @@ def fund_board_override(code):
     return FUND_BOARD_OVERRIDES.get(clean_stock_code(code))
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_snapshot_history():
     if not SNAPSHOTS_FILE.exists():
         return pd.DataFrame()
@@ -1004,7 +1028,7 @@ def load_snapshot_history():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def price_hist(code, is_fund):
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=400)).strftime("%Y%m%d")
@@ -1045,7 +1069,7 @@ def price_hist(code, is_fund):
     return df
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def otc_nav(code):
     for i in range(3):
         try:
@@ -1055,7 +1079,7 @@ def otc_nav(code):
     return None
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def eastmoney_otc_latest_nav(code):
     """天天基金最新已公布净值。只取 dwjz，不使用盘中估值 gsz。"""
     url = f"https://fundgz.1234567.com.cn/js/{str(code)}.js"
@@ -1227,7 +1251,7 @@ def fund_top_a_share_estimate(code):
     return estimate_pct, pd.DataFrame(rows), f"按前十大 A 股重仓估算，匹配权重 {matched_weight:.1f}%"
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=900)
 def boards_live():
     for i in range(4):
         try:
@@ -1248,7 +1272,7 @@ def boards_live():
     raise RuntimeError("同花顺板块行情暂时拉不到，本地也没有历史快照")
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_board_history():
     if BOARD_HEAT_HISTORY_FILE.exists():
         try:
@@ -1275,7 +1299,7 @@ def load_update_log():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_fund_board_map():
     frames = []
     try:
@@ -1499,12 +1523,12 @@ def fund_is_foreign_or_non_a(code, fund_map):
     return str(board).startswith("无") and kind == "场外基金-QDII/境外"
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=900)
 def cached_get_nav(code, holding_type, name, cache_key):
     return get_nav(code, holding_type, name, cache_key=cache_key)
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=900)
 def compute(cache_key=None):
     _ = cache_key
     fund_map_local = load_fund_board_map()
@@ -1707,6 +1731,45 @@ def extract_weight_text(detail):
     return m.group(1) if m else "—"
 
 
+def parse_fund_detail_positions(detail):
+    rows = []
+    for name, board, weight in re.findall(r"([^、；]+?)\(([^,()]+),\s*([0-9.]+)%\)", str(detail or "")):
+        rows.append({
+            "股票/标的": name.strip(),
+            "板块": normalize_board_name(board.strip()),
+            "持仓占比": float(weight),
+        })
+    return rows
+
+
+def dominant_board_from_detail(detail, threshold=50.0):
+    rows = parse_fund_detail_positions(detail)
+    if not rows:
+        return "", 0.0
+    weights = {}
+    for row in rows:
+        board = row["板块"]
+        if valid_board_name(board):
+            weights[board] = weights.get(board, 0.0) + float(row["持仓占比"])
+    if not weights:
+        return "", 0.0
+    board, weight = max(weights.items(), key=lambda kv: kv[1])
+    return (board, weight) if weight >= threshold else ("", weight)
+
+
+def fund_weight_summary(detail, main_board):
+    positions = parse_fund_detail_positions(detail)
+    if positions and valid_board_name(main_board):
+        board_weight = sum(float(p["持仓占比"]) for p in positions if normalize_board_name(p["板块"]) == normalize_board_name(main_board))
+        total = sum(float(p["持仓占比"]) for p in positions)
+        if board_weight:
+            return f"{normalize_board_name(main_board)} {board_weight:.2f}% / 前十大 {total:.2f}%"
+    m = re.search(r"A股匹配权重\s*([0-9.]+%)\s*/\s*前十大合计\s*([0-9.]+%)", str(detail or ""))
+    if m:
+        return f"A股匹配 {m.group(1)} / 前十大 {m.group(2)}"
+    return extract_weight_text(detail)
+
+
 def health_summary(df, board_source, using_old):
     log = load_update_log()
     latest_log_time = log["update_time"].max() if len(log) and "update_time" in log.columns else ""
@@ -1769,7 +1832,7 @@ def holding_card(r, with_chart=False, otc=False):
     pnl = float(r.get("盈亏", float("nan")))
     pnl_rate = float(r.get("盈亏率", float("nan")))
     nav_text = "净值暂未获取" if otc and pd.isna(r.get("现价")) else fmt_price(r.get("现价"))
-    pnl_text = "—" if pd.isna(pnl) else f"{pnl:+,.0f} 元"
+    pnl_text = "—" if pd.isna(pnl) else f"{pnl:+,.2f} 元"
     pnl_rate_text = "—" if pd.isna(pnl_rate) else f"{pnl_rate:+.1f}%"
     st.markdown(
         f"""
@@ -1943,10 +2006,10 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
         return
 
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
-    total_today = pd.to_numeric(show["今日估算盈亏"], errors="coerce").sum(min_count=1)
     latest_date = latest_data_date(show)
+    total_today = effective_daily_sum(show, latest_date)
     today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "最新交易日变动"
-    today_hint = "" if today_label == "三账户当日收益" else f"<div class=\"holding-list-sub\">{esc(latest_date or '最新可用')}数据</div>"
+    today_hint = f"{latest_date or '最新可用'}数据"
     st.markdown(
         f"""
         <div class="holding-topbar">
@@ -1957,7 +2020,7 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
             <div class="holding-topitem">
                 <div class="holding-toplabel">{esc(today_label)}</div>
                 <div class="holding-topvalue {cls(total_today)}">{esc(signed_money(total_today))}</div>
-                {today_hint}
+                <div class="holding-list-sub">{esc(today_hint)}</div>
             </div>
         </div>
         """,
@@ -2010,7 +2073,7 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
                 <div class="holding-list-row">
                     <div>
                         <a class="holding-name-link" href="{detail_href}">{esc(r.get("name", ""))}</a>
-                        <div class="holding-list-meta">￥{float(r.get("市值", 0) or 0):,.0f}&nbsp;&nbsp;{esc(holding_update_meta(r.get("数据日期")))}</div>
+                        <div class="holding-list-meta">￥{float(r.get("市值", 0) or 0):,.2f}&nbsp;&nbsp;{esc(holding_update_meta(r.get("数据日期")))}</div>
                     </div>
                     <div class="holding-cell">
                         <div class="holding-list-value {cls(r.get("今日估算盈亏"))}">{esc(signed_money(r.get("今日估算盈亏")))}</div>
@@ -2029,10 +2092,10 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
             )
         st.markdown("".join(rows_html), unsafe_allow_html=True)
         sub_mv = pd.to_numeric(sub["市值"], errors="coerce").sum()
-        sub_today = pd.to_numeric(sub["今日估算盈亏"], errors="coerce").sum(min_count=1)
+        sub_today = effective_daily_sum(sub, latest_date)
         sub_profit = pd.to_numeric(sub["盈亏"], errors="coerce").sum()
         st.markdown(
-            f'<div class="holding-subtotal">{esc(account)} 小计：市值 {esc(fmt_money(sub_mv))} ｜ 当日 {esc(signed_money(sub_today))} ｜ 持有收益 {esc(signed_money(sub_profit))}</div>',
+            f'<div class="holding-subtotal">{esc(account)} 小计：市值 {esc(fmt_money(sub_mv))} ｜ {esc(latest_date or "最新")}变动 {esc(signed_money(sub_today))} ｜ 持有收益 {esc(signed_money(sub_profit))}</div>',
             unsafe_allow_html=True,
         )
     risk_notice(st)
@@ -2580,7 +2643,7 @@ def _render_account_import_preview(rows):
     st.dataframe(df.style.apply(_shade, axis=1), use_container_width=True, hide_index=True)
 
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=600)
 def cached_account_preview(items_json, account, records_json, selected_codes_json, cache_key):
     _ = cache_key
     items = json.loads(items_json)
@@ -2721,13 +2784,13 @@ def render_home(df, exposure, board_source, snapshot_history):
     total_mv = df["市值"].sum()
     total_pnl = df["盈亏"].sum()
     total_cost = df["成本额"].sum()
-    today_pnl = pd.to_numeric(df["今日估算盈亏"], errors="coerce").sum(min_count=1)
     total_rate = total_pnl / total_cost * 100 if total_cost else 0
     latest_date = latest_data_date(df)
+    today_pnl = effective_daily_sum(df, latest_date)
     today_string = datetime.now().strftime("%Y-%m-%d")
     is_current_day = latest_date == today_string
     pnl_label = "今日估算盈亏" if is_current_day and not is_weekend_today() else "最新交易日估算盈亏"
-    pnl_sub = "场外基金可能晚间更新" if pnl_label == "今日估算盈亏" else f"今天休市或未到当日数据，显示{latest_date or '最新可用'}数据"
+    pnl_sub = f"仅汇总{latest_date or '最新可用'}披露/行情数据"
 
     c = st.columns(3)
     with c[0]:
@@ -2738,18 +2801,19 @@ def render_home(df, exposure, board_source, snapshot_history):
         card("累计盈亏", value_html(total_pnl, " 元", signed=True), f"{total_rate:+.1f}%", cls(total_pnl))
 
     with st.expander("这笔变动来自哪里", expanded=False):
-        st.caption("这里按当前可取得的最新数据拆分。非交易日不会产生新的A股交易，场外/QDII按基金最新披露净值日期显示。")
+        st.caption(f"首页数字只汇总 {latest_date or '最新可用'} 这一天的数据；其他披露日期会单独列出，不混进当日合计。")
+        active = effective_daily_frame(df, latest_date)
         by_acc = (
-            df.assign(_today=pd.to_numeric(df["今日估算盈亏"], errors="coerce"))
+            active.assign(_today=pd.to_numeric(active["今日估算盈亏"], errors="coerce"))
             .groupby("account", as_index=False)["_today"].sum()
             .rename(columns={"account": "账户", "_today": "估算变动"})
         )
-        by_acc["估算变动"] = by_acc["估算变动"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f} 元")
+        by_acc["估算变动"] = by_acc["估算变动"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
         st.dataframe(by_acc, use_container_width=True, hide_index=True)
-        top_change = df.copy()
+        top_change = active.copy()
         top_change["_abs"] = pd.to_numeric(top_change["今日估算盈亏"], errors="coerce").abs()
-        top_change = top_change.sort_values("_abs", ascending=False).head(6)
-        top_change["估算变动"] = top_change["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f} 元")
+        top_change = top_change.sort_values("_abs", ascending=False)
+        top_change["估算变动"] = top_change["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
         st.dataframe(
             top_change[["account", "name", "估算变动", "当日收益说明", "数据日期"]].rename(
                 columns={"account": "账户", "name": "名称"}
@@ -2757,6 +2821,19 @@ def render_home(df, exposure, board_source, snapshot_history):
             use_container_width=True,
             hide_index=True,
         )
+        other = df[data_date_text_series(df) != latest_date].copy()
+        if len(other):
+            other["_abs"] = pd.to_numeric(other["今日估算盈亏"], errors="coerce").abs()
+            other = other.sort_values(["数据日期", "_abs"], ascending=[False, False])
+            other["估算变动"] = other["今日估算盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f} 元")
+            st.caption("以下是其他披露日期的数据，仅供核对，不计入上面的最新交易日合计。")
+            st.dataframe(
+                other[["account", "name", "估算变动", "当日收益说明", "数据日期"]].rename(
+                    columns={"account": "账户", "name": "名称"}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     acc_cols = st.columns(3)
     for col, acc in zip(acc_cols, ["银河证券", "东方财富", "支付宝"]):
@@ -2764,7 +2841,7 @@ def render_home(df, exposure, board_source, snapshot_history):
         mv = sub["市值"].sum()
         pnl = sub["盈亏"].sum()
         with col:
-            card(acc, esc(fmt_money(mv)), f'<span class="{cls(pnl)}">{pnl:+,.0f} 元</span>')
+            card(acc, esc(fmt_money(mv)), f'<span class="{cls(pnl)}">{pnl:+,.2f} 元</span>')
 
     st.divider()
     if len(exposure):
@@ -2819,7 +2896,7 @@ def render_holding_overview(df, snapshot_history):
         sub = df[df["account"] == acc]
         pnl = sub["盈亏"].sum()
         with col:
-            card(acc, esc(fmt_money(sub["市值"].sum())), f'<span class="{cls(pnl)}">{pnl:+,.0f} 元</span>')
+            card(acc, esc(fmt_money(sub["市值"].sum())), f'<span class="{cls(pnl)}">{pnl:+,.2f} 元</span>')
 
     st.subheader("资产类型")
     cols = st.columns(3)
@@ -2830,9 +2907,9 @@ def render_holding_overview(df, snapshot_history):
 
     st.subheader("全部持仓简表")
     show = df.copy()
-    show["市值"] = show["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}")
-    show["盈亏"] = show["盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.0f}")
-    show["盈亏率"] = show["盈亏率"].map(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
+    show["市值"] = show["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.2f}")
+    show["盈亏"] = show["盈亏"].map(lambda v: "—" if pd.isna(v) else f"{v:+,.2f}")
+    show["盈亏率"] = show["盈亏率"].map(lambda v: "—" if pd.isna(v) else f"{v:+.2f}%")
     st.dataframe(
         show[["account", "name", "code", "市值", "盈亏", "盈亏率", "数据日期"]].rename(
             columns={"account": "账户", "name": "名称", "code": "代码"}
@@ -2956,6 +3033,8 @@ def render_my_boards(exposure, fund_map, recent_note, df):
             raw_board = fm.get("main_board") or BOARD_MAP.get(code, ["", "None"])[1]
             board = normalize_board_name(raw_board)
             detail = fm.get("detail", "")
+            local_board = normalize_board_name((BOARD_MAP.get(code) or ["", "None"])[1])
+            dominant_board, dominant_weight = dominant_board_from_detail(detail, threshold=50.0)
             override = fund_board_override(clean_code)
             if override:
                 main_board = override[0]
@@ -2965,10 +3044,18 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                 main_board = "境外/非A股"
                 group = "境外/非A股"
                 note = "该基金主要投资非A股市场，无法直接使用A股板块温度衡量；净值会按基金披露节奏滞后更新。"
+            elif dominant_board:
+                main_board = dominant_board
+                group = "A股可穿透"
+                note = f"前十大重仓中 {dominant_board} 合计约 {dominant_weight:.2f}%，按该主导板块归类。"
             elif valid_board_name(board):
                 main_board = board
                 group = "A股可穿透"
                 note = "根据前十大重仓估算。"
+            elif valid_board_name(local_board):
+                main_board = local_board
+                group = "本地板块"
+                note = "穿透缓存不足，使用持仓配置里的本地板块兜底。"
             else:
                 main_board = "穿透暂缺"
                 group = "穿透暂缺"
@@ -2978,18 +3065,18 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                 "市值": to_num(holding.get("市值", float("nan"))),
                 "主要板块": main_board,
                 "分组": group,
-                "估算占比": extract_weight_text(detail),
+                "估算占比": fund_weight_summary(detail, main_board),
                 "说明": note,
                 "明细": detail,
             })
         if fund_rows:
             fund_df = pd.DataFrame(fund_rows)
             total_fund_mv = pd.to_numeric(fund_df["市值"], errors="coerce").sum()
-            a_count = int((fund_df["分组"] == "A股可穿透").sum())
+            a_count = int(fund_df["分组"].isin(["A股可穿透", "本地板块"]).sum())
             foreign_count = int((fund_df["分组"] == "境外/非A股").sum())
             missing_count = int((fund_df["分组"] == "穿透暂缺").sum())
             summary_strip([
-                ("A股可穿透", esc(f"{a_count} 只"), "flat"),
+                ("A股/本地归类", esc(f"{a_count} 只"), "flat"),
                 ("境外/非A股", esc(f"{foreign_count} 只"), "flat"),
                 ("穿透暂缺", esc(f"{missing_count} 只"), "flat"),
             ])
@@ -3000,29 +3087,31 @@ def render_my_boards(exposure, fund_map, recent_note, df):
             )
             pie_df = pie_df[pie_df["市值_num"] > 0]
             if len(pie_df) and total_fund_mv > 0:
-                fig = go.Figure(go.Pie(
-                    labels=pie_df["主要板块"],
-                    values=pie_df["市值_num"],
-                    hole=.58,
-                    sort=False,
-                    textinfo="label+percent",
-                    textposition="outside",
-                    marker=dict(line=dict(color="#ffffff", width=2)),
-                    hovertemplate="%{label}<br>市值：%{value:,.0f} 元<br>占基金市值：%{percent}<extra></extra>",
+                pie_df["占基金市值"] = pie_df["市值_num"] / total_fund_mv * 100
+                chart_df = pie_df.sort_values("市值_num", ascending=True).tail(10)
+                fig = go.Figure(go.Bar(
+                    x=chart_df["占基金市值"],
+                    y=chart_df["主要板块"],
+                    orientation="h",
+                    marker=dict(color="#2563eb"),
+                    text=chart_df["占基金市值"].map(lambda v: f"{v:.1f}%"),
+                    textposition="auto",
+                    hovertemplate="%{y}<br>市值：%{customdata:,.2f} 元<br>占基金市值：%{x:.1f}%<extra></extra>",
+                    customdata=chart_df["市值_num"],
                 ))
                 fig.update_layout(
-                    height=270,
-                    margin=dict(l=4, r=4, t=8, b=8),
+                    height=max(260, 32 * len(chart_df) + 80),
+                    margin=dict(l=8, r=8, t=8, b=18),
                     showlegend=False,
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
-                    uniformtext_minsize=11,
-                    uniformtext_mode="hide",
+                    xaxis=dict(title="", ticksuffix="%", gridcolor="#e7edf5"),
+                    yaxis=dict(title="", automargin=True),
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                st.markdown('<div class="clean-note">上图按基金持仓市值汇总主导板块；“境外/非A股”和“穿透暂缺”会单独保留，不强行塞进A股板块。</div>', unsafe_allow_html=True)
+                st.markdown('<div class="clean-note">上图按基金持仓市值汇总主导板块；境外、穿透暂缺、本地板块都会单独标出，不强行塞进A股板块。</div>', unsafe_allow_html=True)
             table = fund_df.copy()
-            table["市值"] = table["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.0f}")
+            table["市值"] = table["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.2f}")
             st.dataframe(
                 table[["基金", "市值", "主要板块", "估算占比", "分组"]].rename(columns={"分组": "状态"}),
                 use_container_width=True,
@@ -3033,8 +3122,14 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                     detail_text = str(item.get("明细", "") or "").strip()
                     st.markdown(f"**{item['基金']}**｜{item['主要板块']}")
                     st.caption(item["说明"])
-                    if detail_text:
-                        st.write(detail_text[:700] + ("..." if len(detail_text) > 700 else ""))
+                    positions = parse_fund_detail_positions(detail_text)
+                    if positions:
+                        pos_df = pd.DataFrame(positions)
+                        pos_df["持仓占比"] = pos_df["持仓占比"].map(lambda v: f"{v:.2f}%")
+                        st.dataframe(pos_df, use_container_width=True, hide_index=True)
+                        match = re.search(r"A股匹配权重\s*([0-9.]+%)\s*/\s*前十大合计\s*([0-9.]+%)", detail_text)
+                        if match:
+                            st.caption(f"A股匹配权重：{match.group(1)}；前十大合计：{match.group(2)}。")
                     else:
                         st.caption("暂无原始重仓明细。")
         else:

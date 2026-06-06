@@ -52,7 +52,10 @@ def china_today_string():
 
 def market_cache_key():
     now = china_now()
-    phase = "after_close" if (now.hour, now.minute) >= (15, 5) else "intraday"
+    if now.weekday() >= 5:
+        phase = "closed"
+    else:
+        phase = "after_close" if (now.hour, now.minute) >= (15, 5) else "intraday"
     return f"{now:%Y-%m-%d}:{phase}"
 
 
@@ -409,7 +412,8 @@ def get_otc_a_share_nav(code, name=""):
     code = clean_code(code)
     errors = []
     after_close = (china_now().hour, china_now().minute) >= (15, 5)
-    if after_close:
+    market_closed = after_close or china_now().weekday() >= 5
+    if market_closed:
         try:
             nav, date, prev_nav, prev_date, change_pct = eastmoney_lsjz_latest(code)
             reason = "东方财富历史净值接口，优先取最新已披露真净值"
