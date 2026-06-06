@@ -897,11 +897,9 @@ def render_performance_curve(history, scope="total"):
             y=profits,
             name=f"{label}收益金额",
             mode="lines+markers",
-            line=dict(color="#2563eb", width=3, shape="spline"),
-            marker=dict(size=5, color="#2563eb"),
-            fill="tozeroy",
-            fillcolor="rgba(37,99,235,.08)",
-            hovertemplate="%{x}<br>收益金额：%{y:,.0f} 元<extra></extra>",
+            line=dict(color="#1f5fbf", width=2.4, shape="spline"),
+            marker=dict(size=4.5, color="#1f5fbf", line=dict(color="white", width=1)),
+            hovertemplate="%{x}<br>收益金额：%{y:,.2f} 元<extra></extra>",
         ))
         last_profit = profits.dropna().iloc[-1] if profits.notna().any() else float("nan")
         summary_strip([
@@ -923,10 +921,8 @@ def render_performance_curve(history, scope="total"):
             y=returns,
             name=f"{label}",
             mode="lines+markers",
-            line=dict(color="#2563eb", width=3, shape="spline"),
-            marker=dict(size=5, color="#2563eb"),
-            fill="tozeroy",
-            fillcolor="rgba(37,99,235,.08)",
+            line=dict(color="#1f5fbf", width=2.4, shape="spline"),
+            marker=dict(size=4.5, color="#1f5fbf", line=dict(color="white", width=1)),
             hovertemplate="%{x}<br>收益率：%{y:.2f}%<extra></extra>",
         ))
         fig.add_trace(go.Scatter(
@@ -934,8 +930,8 @@ def render_performance_curve(history, scope="total"):
             y=hs300_ret,
             name="沪深300",
             mode="lines+markers",
-            line=dict(color="#94a3b8", width=2, dash="dot", shape="spline"),
-            marker=dict(size=4, color="#94a3b8"),
+            line=dict(color="#8da0b8", width=2, dash="dot", shape="spline"),
+            marker=dict(size=4, color="#8da0b8", line=dict(color="white", width=1)),
             hovertemplate="%{x}<br>沪深300：%{y:.2f}%<extra></extra>",
         ))
         last_port = returns.dropna().iloc[-1] if returns.notna().any() else float("nan")
@@ -951,16 +947,45 @@ def render_performance_curve(history, scope="total"):
             st.markdown('<div class="clean-note">收益率曲线按第一条快照归零，只比较系统开始记录后的表现。</div>', unsafe_allow_html=True)
         fig.update_yaxes(title="", ticksuffix="%", zeroline=True, zerolinecolor="#cbd5e1")
     fig.update_layout(
-        height=245,
-        margin=dict(l=4, r=4, t=8, b=4),
-        legend=dict(orientation="h", y=-0.18, x=0, font=dict(size=12)),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        template="simple_white",
+        height=300,
+        margin=dict(l=42, r=28, t=20, b=42),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            bgcolor="rgba(255,255,255,0)",
+            borderwidth=0,
+            font=dict(size=12),
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(size=12, color="#334155"),
         hovermode="x unified",
-        xaxis=dict(type="category", showgrid=False, tickfont=dict(size=12)),
-        yaxis=dict(showgrid=True, gridcolor="#e7edf5", tickfont=dict(size=12)),
+        xaxis=dict(
+            type="category",
+            showgrid=False,
+            showline=True,
+            linecolor="#cbd5e1",
+            ticks="outside",
+            tickfont=dict(size=12, color="#64748b"),
+            zeroline=False,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(148,163,184,.22)",
+            showline=True,
+            linecolor="#cbd5e1",
+            ticks="outside",
+            tickfont=dict(size=12, color="#64748b"),
+            zeroline=True,
+            zerolinecolor="#94a3b8",
+            zerolinewidth=1,
+        ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 def sina_stock(code):
@@ -2825,7 +2850,7 @@ def render_home(df, exposure, board_source, snapshot_history):
     today_string = datetime.now().strftime("%Y-%m-%d")
     is_current_day = latest_date == today_string
     pnl_label = "今日估算盈亏" if is_current_day and not is_weekend_today() else "最新可得估算盈亏"
-    pnl_sub = "每只持仓按自身最新披露/行情日汇总，QDII滞后属正常"
+    pnl_sub = "按最新可得数据汇总"
 
     c = st.columns(3)
     with c[0]:
@@ -3108,27 +3133,52 @@ def render_my_boards(exposure, fund_map, recent_note, df):
             pie_df = pie_df[pie_df["市值_num"] > 0]
             if len(pie_df) and total_fund_mv > 0:
                 pie_df["占基金市值"] = pie_df["市值_num"] / total_fund_mv * 100
-                chart_df = pie_df.sort_values("市值_num", ascending=True).tail(10)
-                fig = go.Figure(go.Bar(
-                    x=chart_df["占基金市值"],
-                    y=chart_df["主要板块"],
-                    orientation="h",
-                    marker=dict(color="#2563eb"),
-                    text=chart_df["占基金市值"].map(lambda v: f"{v:.1f}%"),
-                    textposition="auto",
-                    hovertemplate="%{y}<br>市值：%{customdata:,.2f} 元<br>占基金市值：%{x:.1f}%<extra></extra>",
-                    customdata=chart_df["市值_num"],
+                chart_df = pie_df.sort_values("市值_num", ascending=False)
+                if len(chart_df) > 8:
+                    top_df = chart_df.head(7).copy()
+                    other_value = chart_df.iloc[7:]["市值_num"].sum()
+                    chart_df = pd.concat([
+                        top_df,
+                        pd.DataFrame([{"主要板块": "其他", "市值_num": other_value, "占基金市值": other_value / total_fund_mv * 100}]),
+                    ], ignore_index=True)
+                pull = [0.035 if i == 0 else 0 for i in range(len(chart_df))]
+                fig = go.Figure(go.Pie(
+                    labels=chart_df["主要板块"],
+                    values=chart_df["市值_num"],
+                    hole=.58,
+                    sort=False,
+                    pull=pull,
+                    textinfo="percent",
+                    textposition="inside",
+                    insidetextorientation="radial",
+                    marker=dict(
+                        colors=["#1f5fbf", "#7aa6dc", "#f59e0b", "#2ca58d", "#ef6f6c", "#8b5cf6", "#64748b", "#cbd5e1"],
+                        line=dict(color="white", width=2),
+                    ),
+                    hovertemplate="%{label}<br>市值：%{value:,.2f} 元<br>占基金市值：%{percent}<extra></extra>",
                 ))
                 fig.update_layout(
-                    height=max(260, 32 * len(chart_df) + 80),
-                    margin=dict(l=8, r=8, t=8, b=18),
-                    showlegend=False,
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    xaxis=dict(title="", ticksuffix="%", gridcolor="#e7edf5"),
-                    yaxis=dict(title="", automargin=True),
+                    template="simple_white",
+                    height=300,
+                    margin=dict(l=8, r=8, t=12, b=8),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v",
+                        x=1.02,
+                        y=.5,
+                        xanchor="left",
+                        yanchor="middle",
+                        font=dict(size=11),
+                        bgcolor="rgba(255,255,255,0)",
+                        borderwidth=0,
+                    ),
+                    paper_bgcolor="white",
+                    plot_bgcolor="white",
+                    uniformtext_minsize=10,
+                    uniformtext_mode="hide",
+                    annotations=[dict(text="基金<br>板块", x=.5, y=.5, showarrow=False, font=dict(size=13, color="#475569"))],
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 st.markdown('<div class="clean-note">上图按基金持仓市值汇总主导板块；境外、穿透暂缺、本地板块都会单独标出，不强行塞进A股板块。</div>', unsafe_allow_html=True)
             table = fund_df.copy()
             table["市值"] = table["市值"].map(lambda v: "—" if pd.isna(v) else f"{v:,.2f}")
