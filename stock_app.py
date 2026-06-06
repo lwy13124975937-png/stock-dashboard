@@ -3148,9 +3148,9 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                     hole=.58,
                     sort=False,
                     pull=pull,
-                    textinfo="percent",
-                    textposition="inside",
-                    insidetextorientation="radial",
+                    textinfo="label+percent",
+                    textposition="outside",
+                    insidetextorientation="horizontal",
                     marker=dict(
                         colors=["#1f5fbf", "#7aa6dc", "#f59e0b", "#2ca58d", "#ef6f6c", "#8b5cf6", "#64748b", "#cbd5e1"],
                         line=dict(color="white", width=2),
@@ -3160,8 +3160,8 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                 fig.update_layout(
                     template="simple_white",
                     height=300,
-                    margin=dict(l=8, r=8, t=12, b=8),
-                    showlegend=True,
+                    margin=dict(l=34, r=34, t=12, b=8),
+                    showlegend=False,
                     legend=dict(
                         orientation="v",
                         x=1.02,
