@@ -3169,7 +3169,7 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                         pd.DataFrame([{"主要板块": "其他", "市值_num": other_value, "占基金市值": other_value / total_fund_mv * 100}]),
                     ], ignore_index=True)
                 chart_df["外侧标注"] = chart_df.apply(
-                    lambda row: f"{row['主要板块']}<br>{row['占基金市值']:.1f}%" if row["占基金市值"] >= 4 else "",
+                    lambda row: f"{row['主要板块']}<br>{row['占基金市值']:.1f}%",
                     axis=1,
                 )
                 pull = [0.025 if i == 0 else 0 for i in range(len(chart_df))]
@@ -3182,6 +3182,7 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                     pull=pull,
                     textinfo="text",
                     textposition="outside",
+                    textfont=dict(size=10, color="#475569"),
                     insidetextorientation="horizontal",
                     automargin=True,
                     marker=dict(
@@ -3192,8 +3193,8 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                 ))
                 fig.update_layout(
                     template="simple_white",
-                    height=320,
-                    margin=dict(l=48, r=48, t=8, b=8),
+                    height=340,
+                    margin=dict(l=64, r=64, t=8, b=8),
                     showlegend=False,
                     legend=dict(
                         orientation="v",
@@ -3207,7 +3208,7 @@ def render_my_boards(exposure, fund_map, recent_note, df):
                     ),
                     paper_bgcolor="white",
                     plot_bgcolor="white",
-                    uniformtext_minsize=10,
+                    uniformtext_minsize=9,
                     uniformtext_mode="hide",
                     annotations=[dict(text="基金<br>板块", x=.5, y=.5, showarrow=False, font=dict(size=13, color="#475569"))],
                 )
