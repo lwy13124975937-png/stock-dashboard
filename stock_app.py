@@ -6,6 +6,7 @@ for v in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all
 os.environ["NO_PROXY"]="*"; os.environ["no_proxy"]="*"
 
 import base64
+import calendar
 import html
 import json
 import re
@@ -321,8 +322,191 @@ st.markdown(
         line-height: 1.55;
         margin: 4px 0 10px;
     }
+    .profit-calendar-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, .045);
+        padding: 14px;
+        margin: 10px 0 16px;
+    }
+    .profit-calendar-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .profit-calendar-title { font-size: 22px; font-weight: 900; color: var(--text); }
+    .profit-calendar-badge {
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: #dff3ff;
+        color: #1976d2;
+        font-size: 13px;
+        font-weight: 800;
+        white-space: nowrap;
+    }
+    .profit-calendar-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    .profit-calendar-tabs,
+    .profit-calendar-metric {
+        background: #f3f4f6;
+        border-radius: 999px;
+        padding: 3px;
+        display: inline-flex;
+        gap: 2px;
+    }
+    .profit-calendar-tabs a,
+    .profit-calendar-metric a {
+        min-width: 36px;
+        height: 30px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 850;
+        color: #8b929d !important;
+        text-decoration: none !important;
+    }
+    .profit-calendar-tabs .active,
+    .profit-calendar-metric .active {
+        background: #fff;
+        color: #1976d2 !important;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, .08);
+    }
+    .profit-calendar-nav {
+        display: grid;
+        grid-template-columns: 42px 1fr 42px;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0 12px;
+    }
+    .profit-calendar-nav a,
+    .profit-calendar-month {
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 12px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none !important;
+        color: var(--text) !important;
+        font-weight: 850;
+    }
+    .profit-calendar-nav a { color: #94a3b8 !important; font-size: 22px; }
+    .profit-weekdays,
+    .profit-calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 5px;
+    }
+    .profit-period-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 7px;
+        margin-top: 8px;
+    }
+    .profit-weekdays div {
+        text-align: center;
+        color: var(--text);
+        font-weight: 800;
+        font-size: 14px;
+        padding: 3px 0;
+    }
+    .profit-day {
+        min-height: 52px;
+        border-radius: 12px;
+        padding: 6px 3px;
+        text-align: center;
+        color: var(--text) !important;
+        text-decoration: none !important;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 2px;
+    }
+    .profit-day.blank { visibility: hidden; }
+    .profit-day.no-data { background: #f8fafc; color: #94a3b8 !important; }
+    .profit-day.pos-bg { background: #fdebed; }
+    .profit-day.neg-bg { background: #d9f5ed; }
+    .profit-day.selected.selected-pos {
+        background: #dc4f5b !important;
+        color: #fff !important;
+        box-shadow: 0 8px 18px rgba(220, 79, 91, .25);
+    }
+    .profit-day.selected.selected-neg {
+        background: #32b08a !important;
+        color: #fff !important;
+        box-shadow: 0 8px 18px rgba(50, 176, 138, .22);
+    }
+    .profit-day.selected.selected-flat {
+        background: #94a3b8 !important;
+        color: #fff !important;
+        box-shadow: 0 8px 18px rgba(100, 116, 139, .18);
+    }
+    .profit-day-num { font-size: 18px; font-weight: 900; line-height: 1; }
+    .profit-day-value { font-size: 11px; font-weight: 850; line-height: 1.05; white-space: nowrap; }
+    .profit-day-sub { font-size: 10px; color: #8b929d; line-height: 1.05; white-space: nowrap; }
+    .profit-day.selected .profit-day-value { color: #fff !important; }
+    .profit-day .pos { color: var(--red) !important; }
+    .profit-day .neg { color: #0f8d5f !important; }
+    .profit-day.selected .pos,
+    .profit-day.selected .neg,
+    .profit-day.selected .flat { color: #fff !important; }
+    .profit-selected-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 7px;
+        margin-top: 12px;
+    }
+    .profit-selected-item {
+        background: #f8fafc;
+        border-radius: 12px;
+        padding: 8px 6px;
+        text-align: center;
+    }
+    .profit-selected-label { color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+    .profit-selected-value { font-size: 13px; font-weight: 850; line-height: 1.15; }
+    .curve-head {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 12px 0 6px;
+    }
+    .curve-head-item {
+        background: transparent;
+        padding: 4px 0;
+    }
+    .curve-head-label {
+        color: var(--text);
+        font-weight: 850;
+        font-size: 18px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+    }
+    .curve-line-dot {
+        width: 18px;
+        height: 6px;
+        border-radius: 999px;
+        display: inline-block;
+    }
+    .curve-head-value {
+        font-size: 24px;
+        font-weight: 900;
+        margin-top: 6px;
+        line-height: 1.1;
+    }
     div[data-testid="stDataFrame"] { font-size: 13px; }
     @media (max-width: 760px) {
+        h1 { font-size: 38px !important; line-height: 1.08 !important; }
         .block-container { padding-top: 2rem; padding-left: .72rem; padding-right: .72rem; }
         .metric-card { min-height: 84px; padding: 12px; }
         .metric-value { font-size: 21px; }
@@ -343,11 +527,27 @@ st.markdown(
         .holding-list-meta, .holding-list-sub { font-size: 11px; }
         .holding-list-value { font-size: 13px; }
         .holding-topvalue { font-size: 17px; }
+        .holding-toplabel { font-size: 11px; }
         .account-title { font-size: 18px; margin: 12px 0 3px; }
         .summary-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
         .summary-mini { padding: 8px 7px; border-radius: 10px; }
         .summary-label { font-size: 11px; }
         .summary-value { font-size: 15px; }
+        .profit-calendar-card { padding: 11px; border-radius: 14px; }
+        .profit-calendar-title { font-size: 20px; }
+        .profit-calendar-badge { font-size: 11px; padding: 4px 8px; }
+        .profit-calendar-tabs a,
+        .profit-calendar-metric a { min-width: 30px; height: 28px; font-size: 13px; }
+        .profit-calendar-grid, .profit-weekdays { gap: 4px; }
+        .profit-period-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .profit-day { min-height: 46px; border-radius: 10px; padding: 5px 2px; }
+        .profit-day-num { font-size: 16px; }
+        .profit-day-value { font-size: 9.5px; letter-spacing: 0; }
+        .profit-selected-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .curve-head { gap: 6px; }
+        .curve-head-label { font-size: 13px; gap: 4px; }
+        .curve-line-dot { width: 13px; height: 5px; }
+        .curve-head-value { font-size: 18px; }
     }
     </style>
     """,
@@ -854,6 +1054,242 @@ def push_name_code_map_to_github():
     if not NAME_CODE_MAP_FILE.exists():
         return True, ""
     return push_text_to_github(NAME_CODE_MAP_FILE.read_text(encoding="utf-8"), "name_code_map.json", "update name-code map via app")
+
+
+def build_daily_profit_calendar(history):
+    required = ["date", "total_profit", "galaxy_profit", "eastmoney_profit", "alipay_profit", "total_mv", "galaxy_mv", "eastmoney_mv", "alipay_mv"]
+    if history is None or len(history) < 2 or any(c not in history.columns for c in required):
+        return pd.DataFrame()
+    dfh = history.copy()
+    dfh["date_dt"] = pd.to_datetime(dfh["date"], errors="coerce")
+    dfh = dfh.dropna(subset=["date_dt"]).sort_values("date_dt").reset_index(drop=True)
+    for col in required[1:]:
+        dfh[col] = pd.to_numeric(dfh[col], errors="coerce")
+    rows = []
+    for idx in range(1, len(dfh)):
+        cur = dfh.iloc[idx]
+        prev = dfh.iloc[idx - 1]
+        row = {
+            "date": cur["date_dt"].date(),
+            "date_str": cur["date_dt"].strftime("%Y-%m-%d"),
+        }
+        for label, profit_col, mv_col in [
+            ("galaxy", "galaxy_profit", "galaxy_mv"),
+            ("eastmoney", "eastmoney_profit", "eastmoney_mv"),
+            ("alipay", "alipay_profit", "alipay_mv"),
+            ("total", "total_profit", "total_mv"),
+        ]:
+            delta = cur[profit_col] - prev[profit_col] if pd.notna(cur[profit_col]) and pd.notna(prev[profit_col]) else float("nan")
+            prev_mv = prev[mv_col] if pd.notna(prev[mv_col]) else float("nan")
+            row[f"{label}_amount"] = delta
+            row[f"{label}_pct"] = delta / prev_mv * 100 if pd.notna(delta) and pd.notna(prev_mv) and prev_mv else float("nan")
+            row[f"{label}_base_mv"] = prev_mv
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def short_money_for_calendar(v):
+    try:
+        n = float(v)
+        if pd.isna(n):
+            return "—"
+        if abs(n) >= 10000:
+            return f"{n / 10000:+.1f}万"
+        return f"{n:+.0f}"
+    except Exception:
+        return "—"
+
+
+def render_profit_calendar(history):
+    daily = build_daily_profit_calendar(history)
+    if daily is None or len(daily) == 0:
+        st.info("收益日历从每日快照开始计算，至少需要两天记录。")
+        return
+
+    latest_date = pd.to_datetime(daily["date"]).max().date()
+    query_date = str(st.query_params.get("cal_date", "") or "").strip()
+    query_month = str(st.query_params.get("cal_month", "") or "").strip()
+    metric = str(st.query_params.get("cal_metric", "amount") or "amount").strip()
+    view = str(st.query_params.get("cal_view", "day") or "day").strip()
+    if metric not in ("amount", "pct"):
+        metric = "amount"
+    if view not in ("day", "week", "month", "year"):
+        view = "day"
+    mode = "收益率" if metric == "pct" else "金额"
+
+    selected_date = pd.to_datetime(query_date, errors="coerce")
+    if pd.isna(selected_date):
+        selected_date = pd.Timestamp(latest_date)
+    selected_date = selected_date.date()
+    if query_month:
+        month_dt = pd.to_datetime(query_month + "-01", errors="coerce")
+    else:
+        month_dt = pd.Timestamp(selected_date.replace(day=1))
+    if pd.isna(month_dt):
+        month_dt = pd.Timestamp(latest_date.replace(day=1))
+    year, month = int(month_dt.year), int(month_dt.month)
+
+    month_daily = daily[pd.to_datetime(daily["date"]).dt.to_period("M") == pd.Period(f"{year}-{month:02d}")].copy()
+    best = month_daily.dropna(subset=["total_amount"]).sort_values("total_amount", ascending=False).head(1)
+    if len(best):
+        best_text = f"本月最好 {short_money_for_calendar(best.iloc[0]['total_amount'])}"
+    else:
+        best_text = "本月数据积累中"
+
+    def cal_href(month_text=None, date_text=None, metric_text=None, view_text=None):
+        href_month = month_text or f"{year}-{month:02d}"
+        href_date = date_text or selected_date.strftime("%Y-%m-%d")
+        href_metric = metric_text or metric
+        href_view = view_text or view
+        return f"?cal_month={href_month}&cal_date={href_date}&cal_metric={href_metric}&cal_view={href_view}"
+
+    controls_html = f"""
+        <div class="profit-calendar-controls">
+            <div class="profit-calendar-tabs">
+                <a class="{'active' if view == 'day' else ''}" href="{cal_href(view_text='day')}">日</a>
+                <a class="{'active' if view == 'week' else ''}" href="{cal_href(view_text='week')}">周</a>
+                <a class="{'active' if view == 'month' else ''}" href="{cal_href(view_text='month')}">月</a>
+                <a class="{'active' if view == 'year' else ''}" href="{cal_href(view_text='year')}">年</a>
+            </div>
+            <div class="profit-calendar-metric">
+                <a class="{'active' if metric == 'amount' else ''}" href="{cal_href(metric_text='amount')}">¥</a>
+                <a class="{'active' if metric == 'pct' else ''}" href="{cal_href(metric_text='pct')}">%</a>
+            </div>
+        </div>
+    """
+
+    def metric_value(row, key):
+        return row[f"{key}_amount"] if metric == "amount" else row[f"{key}_pct"]
+
+    def metric_text(value):
+        return short_money_for_calendar(value) if metric == "amount" else signed_pct(value)
+
+    def selected_class(value):
+        if pd.notna(value) and value > 0:
+            return "selected-pos"
+        if pd.notna(value) and value < 0:
+            return "selected-neg"
+        return "selected-flat"
+
+    prev_month = (pd.Timestamp(year=year, month=month, day=1) - pd.offsets.MonthBegin(1)).strftime("%Y-%m")
+    next_month = (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthBegin(1)).strftime("%Y-%m")
+    rows = []
+    cal = calendar.Calendar(firstweekday=6)
+    data_map = {str(r["date"]): r for _, r in daily.iterrows()}
+    today = china_today_date().date()
+    for week in cal.monthdatescalendar(year, month):
+        for d in week:
+            if d.month != month:
+                rows.append('<div class="profit-day blank"></div>')
+                continue
+            row = data_map.get(str(d))
+            is_selected = d == selected_date
+            if row is not None:
+                value = metric_value(row, "total")
+                text = metric_text(value)
+                tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
+                title = (
+                    f"银河 {signed_money(row['galaxy_amount'])}；东财 {signed_money(row['eastmoney_amount'])}；"
+                    f"支付宝 {signed_money(row['alipay_amount'])}；合计 {signed_money(row['total_amount'])}"
+                )
+                value_cls = cls(value)
+                href = cal_href(date_text=f"{d:%Y-%m-%d}")
+                selected_extra = f"selected {selected_class(value)}" if is_selected else ""
+                rows.append(
+                    f'<a class="profit-day {tone} {selected_extra}" href="{href}" title="{esc(title)}">'
+                    f'<div class="profit-day-num">{d.day}</div><div class="profit-day-value {value_cls}">{esc(text)}</div></a>'
+                )
+            elif d == today:
+                rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">今</div><div class="profit-day-value">未更新</div></div>')
+            else:
+                rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">{d.day}</div><div class="profit-day-value">&nbsp;</div></div>')
+
+    selected = data_map.get(str(selected_date))
+    detail_html = ""
+    if selected is not None:
+        label_map = [("银河", "galaxy"), ("东财", "eastmoney"), ("支付宝", "alipay"), ("合计", "total")]
+        items = []
+        for label, key in label_map:
+            value = metric_value(selected, key)
+            text = signed_money(value) if mode == "金额" else signed_pct(value)
+            items.append(
+                f'<div class="profit-selected-item"><div class="profit-selected-label">{label}</div>'
+                f'<div class="profit-selected-value {cls(value)}">{esc(text)}</div></div>'
+            )
+        detail_html = '<div class="profit-selected-strip">' + "".join(items) + "</div>"
+
+    def aggregate_period_frame(period_type):
+        df = daily.copy()
+        df["date_dt"] = pd.to_datetime(df["date"])
+        frames = []
+        if period_type == "week":
+            month_dates = {d for week in cal.monthdatescalendar(year, month) for d in week if d.month == month}
+            df = df[df["date_dt"].dt.date.isin(month_dates)].copy()
+            if df.empty:
+                return []
+            week_lookup = {}
+            for idx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                dates = [d for d in week if d.month == month]
+                if dates:
+                    for d in dates:
+                        week_lookup[d] = (idx, min(dates), max(dates))
+            df["period_key"] = df["date_dt"].dt.date.map(lambda d: week_lookup.get(d, (0, d, d))[0])
+            for week_no, group in df.groupby("period_key"):
+                if not week_no:
+                    continue
+                _, start_d, end_d = week_lookup[group["date_dt"].dt.date.iloc[0]]
+                frames.append((f"第{int(week_no)}周", f"{start_d.month}.{start_d.day}-{end_d.month}.{end_d.day}", group))
+        elif period_type == "month":
+            df = df[df["date_dt"].dt.year == year].copy()
+            for period, group in df.groupby(df["date_dt"].dt.to_period("M")):
+                frames.append((f"{period.month}月", str(period), group))
+        else:
+            for period, group in df.groupby(df["date_dt"].dt.year):
+                frames.append((f"{int(period)}年", "", group))
+        return frames
+
+    period_html = ""
+    if view != "day":
+        period_cards = []
+        for label, sublabel, group in aggregate_period_frame(view):
+            total_amount = group["total_amount"].sum()
+            base = group["total_base_mv"].dropna()
+            total_pct = total_amount / base.iloc[0] * 100 if len(base) and base.iloc[0] else float("nan")
+            value = total_amount if mode == "金额" else total_pct
+            tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
+            period_cards.append(
+                f'<div class="profit-day {tone}"><div class="profit-day-num">{esc(label)}</div>'
+                f'<div class="profit-day-value {cls(value)}">{esc(metric_text(value))}</div>'
+                f'<div class="profit-day-sub">{esc(sublabel)}</div></div>'
+            )
+        if period_cards:
+            period_html = '<div class="profit-period-grid">' + "".join(period_cards) + "</div>"
+        else:
+            period_html = '<div class="muted">本区间暂无收益快照。</div>'
+
+    if view == "day":
+        calendar_body = (
+            '<div class="profit-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'
+            f'<div class="profit-calendar-grid">{"".join(rows)}</div>{detail_html}'
+        )
+    else:
+        calendar_body = period_html
+    calendar_html = (
+        '<div class="profit-calendar-card">'
+        '<div class="profit-calendar-top">'
+        '<div class="profit-calendar-title">收益日历</div>'
+        f'<div class="profit-calendar-badge">{esc(best_text)}</div>'
+        '</div>'
+        f'{controls_html}'
+        '<div class="profit-calendar-nav">'
+        f'<a href="{cal_href(month_text=prev_month)}">‹</a>'
+        f'<div class="profit-calendar-month">{year}年 {month}月</div>'
+        f'<a href="{cal_href(month_text=next_month)}">›</a>'
+        '</div>'
+        f'{calendar_body}'
+        '</div>'
+    )
+    st.markdown(calendar_html, unsafe_allow_html=True)
 
 
 def render_performance_curve(history, scope="total"):
@@ -2095,8 +2531,8 @@ def render_holdings_list(df, snapshot_history, fund_map, live):
     total_mv = pd.to_numeric(show["市值"], errors="coerce").sum()
     latest_date = latest_data_date(show)
     total_today = latest_available_daily_sum(show)
-    today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "三账户最新可得变动"
-    today_hint = "各持仓按自身最新披露/行情日汇总"
+    today_label = "三账户当日收益" if latest_date == datetime.now().strftime("%Y-%m-%d") and not is_weekend_today() else "最新可得变动"
+    today_hint = "按最新数据汇总"
     st.markdown(
         f"""
         <div class="holding-topbar">
@@ -2914,6 +3350,8 @@ def render_home(df, exposure, board_source, snapshot_history, using_old_boards=F
         pnl = sub["盈亏"].sum()
         with col:
             card(acc, esc(fmt_money(mv)), f'<span class="{cls(pnl)}">{pnl:+,.2f} 元</span>')
+
+    render_profit_calendar(snapshot_history)
 
     st.divider()
     if len(exposure):
