@@ -363,7 +363,9 @@ st.markdown(
         gap: 2px;
     }
     .profit-calendar-tabs a,
-    .profit-calendar-metric a {
+    .profit-calendar-metric a,
+    .profit-calendar-tabs span,
+    .profit-calendar-metric span {
         min-width: 36px;
         height: 30px;
         border-radius: 999px;
@@ -388,6 +390,7 @@ st.markdown(
         margin: 8px 0 12px;
     }
     .profit-calendar-nav a,
+    .profit-calendar-nav span,
     .profit-calendar-month {
         border: 1px solid var(--line);
         background: #fff;
@@ -400,7 +403,8 @@ st.markdown(
         color: var(--text) !important;
         font-weight: 850;
     }
-    .profit-calendar-nav a { color: #94a3b8 !important; font-size: 22px; }
+    .profit-calendar-nav a,
+    .profit-calendar-nav span { color: #94a3b8 !important; font-size: 22px; }
     .profit-weekdays,
     .profit-calendar-grid {
         display: grid;
@@ -537,7 +541,9 @@ st.markdown(
         .profit-calendar-title { font-size: 20px; }
         .profit-calendar-badge { font-size: 11px; padding: 4px 8px; }
         .profit-calendar-tabs a,
-        .profit-calendar-metric a { min-width: 30px; height: 28px; font-size: 13px; }
+        .profit-calendar-metric a,
+        .profit-calendar-tabs span,
+        .profit-calendar-metric span { min-width: 30px; height: 28px; font-size: 13px; }
         .profit-calendar-grid, .profit-weekdays { gap: 4px; }
         .profit-period-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .profit-day { min-height: 46px; border-radius: 10px; padding: 5px 2px; }
@@ -1100,83 +1106,70 @@ def short_money_for_calendar(v):
         return "—"
 
 
-def render_profit_calendar(history):
+def render_profit_calendar(history, current_df=None):
     daily = build_daily_profit_calendar(history)
+    if daily is None:
+        daily = pd.DataFrame()
+
+    selected_date = None
+    current_row = None
+    if current_df is not None and len(current_df):
+        current_date = latest_data_date(current_df)
+        if current_date:
+            selected_date = pd.to_datetime(current_date, errors="coerce")
+            if not pd.isna(selected_date):
+                selected_date = selected_date.date()
+                account_map = [("galaxy", "银河证券"), ("eastmoney", "东方财富"), ("alipay", "支付宝")]
+                current_row = {"date": selected_date, "date_str": selected_date.strftime("%Y-%m-%d")}
+                total_amount = 0.0
+                total_mv = 0.0
+                for key, account in account_map:
+                    part = current_df[current_df["account"] == account]
+                    amount = pd.to_numeric(part["今日估算盈亏"], errors="coerce").sum(min_count=1)
+                    mv = pd.to_numeric(part["市值"], errors="coerce").sum(min_count=1)
+                    if pd.isna(amount):
+                        amount = float("nan")
+                    else:
+                        total_amount += float(amount)
+                    if pd.notna(mv):
+                        total_mv += float(mv)
+                    base = float(mv) - float(amount) if pd.notna(mv) and pd.notna(amount) else float("nan")
+                    current_row[f"{key}_amount"] = amount
+                    current_row[f"{key}_pct"] = amount / base * 100 if pd.notna(amount) and pd.notna(base) and base else float("nan")
+                    current_row[f"{key}_base_mv"] = base
+                total_base = total_mv - total_amount if total_mv else float("nan")
+                current_row["total_amount"] = total_amount
+                current_row["total_pct"] = total_amount / total_base * 100 if total_base else float("nan")
+                current_row["total_base_mv"] = total_base
+
+    if selected_date is None:
+        if daily is None or len(daily) == 0:
+            st.info("收益日历从每日快照开始计算，至少需要两天记录。")
+            return
+        selected_date = pd.to_datetime(daily["date"]).max().date()
+
+    if daily is None or len(daily) == 0:
+        daily = pd.DataFrame([current_row]) if current_row else pd.DataFrame()
+    elif current_row:
+        daily = daily.copy()
+        daily["date"] = pd.to_datetime(daily["date"]).dt.date
+        daily = daily[daily["date"] != selected_date]
+        daily = pd.concat([daily, pd.DataFrame([current_row])], ignore_index=True)
+
     if daily is None or len(daily) == 0:
         st.info("收益日历从每日快照开始计算，至少需要两天记录。")
         return
 
-    latest_date = pd.to_datetime(daily["date"]).max().date()
-    query_date = str(st.query_params.get("cal_date", "") or "").strip()
-    query_month = str(st.query_params.get("cal_month", "") or "").strip()
-    metric = str(st.query_params.get("cal_metric", "amount") or "amount").strip()
-    view = str(st.query_params.get("cal_view", "day") or "day").strip()
-    if metric not in ("amount", "pct"):
-        metric = "amount"
-    if view not in ("day", "week", "month", "year"):
-        view = "day"
-    mode = "收益率" if metric == "pct" else "金额"
-
-    selected_date = pd.to_datetime(query_date, errors="coerce")
-    if pd.isna(selected_date):
-        selected_date = pd.Timestamp(latest_date)
-    selected_date = selected_date.date()
-    if query_month:
-        month_dt = pd.to_datetime(query_month + "-01", errors="coerce")
-    else:
-        month_dt = pd.Timestamp(selected_date.replace(day=1))
-    if pd.isna(month_dt):
-        month_dt = pd.Timestamp(latest_date.replace(day=1))
-    year, month = int(month_dt.year), int(month_dt.month)
-
+    year, month = selected_date.year, selected_date.month
     month_daily = daily[pd.to_datetime(daily["date"]).dt.to_period("M") == pd.Period(f"{year}-{month:02d}")].copy()
     best = month_daily.dropna(subset=["total_amount"]).sort_values("total_amount", ascending=False).head(1)
-    if len(best):
-        best_text = f"本月最好 {short_money_for_calendar(best.iloc[0]['total_amount'])}"
-    else:
-        best_text = "本月数据积累中"
+    best_text = f"本月最好 {short_money_for_calendar(best.iloc[0]['total_amount'])}" if len(best) else "本月数据积累中"
 
-    def cal_href(month_text=None, date_text=None, metric_text=None, view_text=None):
-        href_month = month_text or f"{year}-{month:02d}"
-        href_date = date_text or selected_date.strftime("%Y-%m-%d")
-        href_metric = metric_text or metric
-        href_view = view_text or view
-        return f"?cal_month={href_month}&cal_date={href_date}&cal_metric={href_metric}&cal_view={href_view}"
-
-    controls_html = f"""
-        <div class="profit-calendar-controls">
-            <div class="profit-calendar-tabs">
-                <a class="{'active' if view == 'day' else ''}" href="{cal_href(view_text='day')}">日</a>
-                <a class="{'active' if view == 'week' else ''}" href="{cal_href(view_text='week')}">周</a>
-                <a class="{'active' if view == 'month' else ''}" href="{cal_href(view_text='month')}">月</a>
-                <a class="{'active' if view == 'year' else ''}" href="{cal_href(view_text='year')}">年</a>
-            </div>
-            <div class="profit-calendar-metric">
-                <a class="{'active' if metric == 'amount' else ''}" href="{cal_href(metric_text='amount')}">¥</a>
-                <a class="{'active' if metric == 'pct' else ''}" href="{cal_href(metric_text='pct')}">%</a>
-            </div>
-        </div>
-    """
-
-    def metric_value(row, key):
-        return row[f"{key}_amount"] if metric == "amount" else row[f"{key}_pct"]
-
-    def metric_text(value):
-        return short_money_for_calendar(value) if metric == "amount" else signed_pct(value)
-
-    def selected_class(value):
-        if pd.notna(value) and value > 0:
-            return "selected-pos"
-        if pd.notna(value) and value < 0:
-            return "selected-neg"
-        return "selected-flat"
-
-    prev_month = (pd.Timestamp(year=year, month=month, day=1) - pd.offsets.MonthBegin(1)).strftime("%Y-%m")
-    next_month = (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthBegin(1)).strftime("%Y-%m")
-    rows = []
-    cal = calendar.Calendar(firstweekday=6)
-    data_map = {str(r["date"]): r for _, r in daily.iterrows()}
+    data_map = {str(pd.to_datetime(r["date"]).date()): r for _, r in daily.iterrows()}
+    selected = data_map.get(str(selected_date))
     today = china_today_date().date()
+    cal = calendar.Calendar(firstweekday=6)
+    rows = []
     for week in cal.monthdatescalendar(year, month):
         for d in week:
             if d.month != month:
@@ -1185,108 +1178,50 @@ def render_profit_calendar(history):
             row = data_map.get(str(d))
             is_selected = d == selected_date
             if row is not None:
-                value = metric_value(row, "total")
-                text = metric_text(value)
+                value = row.get("total_amount", float("nan"))
+                text = short_money_for_calendar(value)
                 tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
-                title = (
-                    f"银河 {signed_money(row['galaxy_amount'])}；东财 {signed_money(row['eastmoney_amount'])}；"
-                    f"支付宝 {signed_money(row['alipay_amount'])}；合计 {signed_money(row['total_amount'])}"
-                )
-                value_cls = cls(value)
-                href = cal_href(date_text=f"{d:%Y-%m-%d}")
-                selected_extra = f"selected {selected_class(value)}" if is_selected else ""
+                selected_extra = ""
+                if is_selected:
+                    selected_extra = "selected selected-pos" if pd.notna(value) and value > 0 else ("selected selected-neg" if pd.notna(value) and value < 0 else "selected selected-flat")
                 rows.append(
-                    f'<a class="profit-day {tone} {selected_extra}" href="{href}" title="{esc(title)}">'
-                    f'<div class="profit-day-num">{d.day}</div><div class="profit-day-value {value_cls}">{esc(text)}</div></a>'
+                    f'<div class="profit-day {tone} {selected_extra}">'
+                    f'<div class="profit-day-num">{d.day}</div><div class="profit-day-value {cls(value)}">{esc(text)}</div></div>'
                 )
             elif d == today:
                 rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">今</div><div class="profit-day-value">未更新</div></div>')
             else:
                 rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">{d.day}</div><div class="profit-day-value">&nbsp;</div></div>')
 
-    selected = data_map.get(str(selected_date))
     detail_html = ""
     if selected is not None:
         label_map = [("银河", "galaxy"), ("东财", "eastmoney"), ("支付宝", "alipay"), ("合计", "total")]
         items = []
         for label, key in label_map:
-            value = metric_value(selected, key)
-            text = signed_money(value) if mode == "金额" else signed_pct(value)
+            value = selected.get(f"{key}_amount", float("nan"))
             items.append(
                 f'<div class="profit-selected-item"><div class="profit-selected-label">{label}</div>'
-                f'<div class="profit-selected-value {cls(value)}">{esc(text)}</div></div>'
+                f'<div class="profit-selected-value {cls(value)}">{esc(signed_money(value))}</div></div>'
             )
         detail_html = '<div class="profit-selected-strip">' + "".join(items) + "</div>"
 
-    def aggregate_period_frame(period_type):
-        df = daily.copy()
-        df["date_dt"] = pd.to_datetime(df["date"])
-        frames = []
-        if period_type == "week":
-            month_dates = {d for week in cal.monthdatescalendar(year, month) for d in week if d.month == month}
-            df = df[df["date_dt"].dt.date.isin(month_dates)].copy()
-            if df.empty:
-                return []
-            week_lookup = {}
-            for idx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
-                dates = [d for d in week if d.month == month]
-                if dates:
-                    for d in dates:
-                        week_lookup[d] = (idx, min(dates), max(dates))
-            df["period_key"] = df["date_dt"].dt.date.map(lambda d: week_lookup.get(d, (0, d, d))[0])
-            for week_no, group in df.groupby("period_key"):
-                if not week_no:
-                    continue
-                _, start_d, end_d = week_lookup[group["date_dt"].dt.date.iloc[0]]
-                frames.append((f"第{int(week_no)}周", f"{start_d.month}.{start_d.day}-{end_d.month}.{end_d.day}", group))
-        elif period_type == "month":
-            df = df[df["date_dt"].dt.year == year].copy()
-            for period, group in df.groupby(df["date_dt"].dt.to_period("M")):
-                frames.append((f"{period.month}月", str(period), group))
-        else:
-            for period, group in df.groupby(df["date_dt"].dt.year):
-                frames.append((f"{int(period)}年", "", group))
-        return frames
-
-    period_html = ""
-    if view != "day":
-        period_cards = []
-        for label, sublabel, group in aggregate_period_frame(view):
-            total_amount = group["total_amount"].sum()
-            base = group["total_base_mv"].dropna()
-            total_pct = total_amount / base.iloc[0] * 100 if len(base) and base.iloc[0] else float("nan")
-            value = total_amount if mode == "金额" else total_pct
-            tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
-            period_cards.append(
-                f'<div class="profit-day {tone}"><div class="profit-day-num">{esc(label)}</div>'
-                f'<div class="profit-day-value {cls(value)}">{esc(metric_text(value))}</div>'
-                f'<div class="profit-day-sub">{esc(sublabel)}</div></div>'
-            )
-        if period_cards:
-            period_html = '<div class="profit-period-grid">' + "".join(period_cards) + "</div>"
-        else:
-            period_html = '<div class="muted">本区间暂无收益快照。</div>'
-
-    if view == "day":
-        calendar_body = (
-            '<div class="profit-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'
-            f'<div class="profit-calendar-grid">{"".join(rows)}</div>{detail_html}'
-        )
-    else:
-        calendar_body = period_html
     calendar_html = (
         '<div class="profit-calendar-card">'
         '<div class="profit-calendar-top">'
         '<div class="profit-calendar-title">收益日历</div>'
         f'<div class="profit-calendar-badge">{esc(best_text)}</div>'
         '</div>'
-        f'{controls_html}'
-        '<div class="profit-calendar-nav">'
-        f'<a href="{cal_href(month_text=prev_month)}">‹</a>'
-        f'<div class="profit-calendar-month">{year}年 {month}月</div>'
-        f'<a href="{cal_href(month_text=next_month)}">›</a>'
+        '<div class="profit-calendar-controls is-static">'
+        '<div class="profit-calendar-tabs"><span class="active">日</span><span>周</span><span>月</span><span>年</span></div>'
+        '<div class="profit-calendar-metric"><span class="active">¥</span><span>%</span></div>'
         '</div>'
-        f'{calendar_body}'
+        '<div class="profit-calendar-nav is-static">'
+        '<span>‹</span>'
+        f'<div class="profit-calendar-month">{year}年 {month}月</div>'
+        '<span>›</span>'
+        '</div>'
+        '<div class="profit-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'
+        f'<div class="profit-calendar-grid">{"".join(rows)}</div>{detail_html}'
         '</div>'
     )
     st.markdown(calendar_html, unsafe_allow_html=True)
@@ -2433,6 +2368,33 @@ def aggregate_holdings_for_display(df):
     return pd.DataFrame(rows)
 
 
+def holdings_signature():
+    try:
+        return json.dumps(HOLDINGS, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(HOLDINGS)
+
+
+def get_compute_for_session(cache_key):
+    signature = holdings_signature()
+    cache_token = (cache_key, signature)
+    if st.session_state.get("_compute_cache_token") == cache_token and "_compute_cache_df" in st.session_state:
+        return st.session_state["_compute_cache_df"].copy()
+    df = compute(cache_key)
+    st.session_state["_compute_cache_token"] = cache_token
+    st.session_state["_compute_cache_df"] = df.copy()
+    return df
+
+
+def get_board_context_for_session(cache_key):
+    if st.session_state.get("_board_context_cache_key") == cache_key and "_board_context_cache_value" in st.session_state:
+        return st.session_state["_board_context_cache_value"]
+    value = load_board_context(cache_key)
+    st.session_state["_board_context_cache_key"] = cache_key
+    st.session_state["_board_context_cache_value"] = value
+    return value
+
+
 def enrich_holding_estimates(show, fund_map):
     if show is None or len(show) == 0:
         return show
@@ -2902,6 +2864,8 @@ def save_managed_holdings(records):
     sync_ok, sync_msg = push_holdings_to_github(json_text)
     HOLDINGS, BOARD_MAP = load_holdings_data()
     st.cache_data.clear()
+    for key in ("_compute_cache_token", "_compute_cache_df", "_board_context_cache_key", "_board_context_cache_value"):
+        st.session_state.pop(key, None)
     return backup, sync_ok, sync_msg
 
 
@@ -3351,7 +3315,7 @@ def render_home(df, exposure, board_source, snapshot_history, using_old_boards=F
         with col:
             card(acc, esc(fmt_money(mv)), f'<span class="{cls(pnl)}">{pnl:+,.2f} 元</span>')
 
-    render_profit_calendar(snapshot_history)
+    render_profit_calendar(snapshot_history, df)
 
     st.divider()
     if len(exposure):
@@ -3741,15 +3705,15 @@ if page == "高级功能":
 
 if page == "板块雷达":
     with st.spinner("正在更新板块温度..."):
-        board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = load_board_context(cache_key)
+        board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = get_board_context_for_session(cache_key)
     render_radar(live, board_source, using_old_boards)
     st.stop()
 
 with st.spinner("正在更新持仓行情..."):
-    df = compute(cache_key)
+    df = get_compute_for_session(cache_key)
 
 with st.spinner("正在更新板块温度..."):
-    board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = load_board_context(cache_key)
+    board_history, recent_sentiment, recent_note, live, board_source, using_old_boards = get_board_context_for_session(cache_key)
 
 if page == "首页":
     exposure = build_exposure(df, fund_map, live, recent_sentiment) if live is not None else build_exposure(df, fund_map, None, recent_sentiment)
