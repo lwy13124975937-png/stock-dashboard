@@ -405,6 +405,7 @@ st.markdown(
     }
     .profit-calendar-nav a,
     .profit-calendar-nav span { color: #94a3b8 !important; font-size: 22px; }
+    .profit-calendar-month-only { margin: 8px 0 12px; }
     .profit-weekdays,
     .profit-calendar-grid {
         display: grid;
@@ -1101,12 +1102,47 @@ def short_money_for_calendar(v):
             return "—"
         if abs(n) >= 10000:
             return f"{n / 10000:+.1f}万"
-        return f"{n:+.0f}"
+        return f"{n:+.1f}"
     except Exception:
         return "—"
 
 
+def calendar_metric_text(value, metric):
+    return short_money_for_calendar(value) if metric == "¥" else signed_pct(value)
+
+
+def calendar_period_pct(group, amount_col, base_col):
+    amount = pd.to_numeric(group[amount_col], errors="coerce").sum(min_count=1)
+    base = pd.to_numeric(group[base_col], errors="coerce").dropna()
+    if pd.isna(amount) or len(base) == 0 or not float(base.iloc[0]):
+        return float("nan")
+    return float(amount) / float(base.iloc[0]) * 100
+
+
 def render_profit_calendar(history, current_df=None):
+    if st.session_state.get("profit_calendar_view") not in (None, "日", "周", "月", "年"):
+        st.session_state.pop("profit_calendar_view", None)
+    if st.session_state.get("profit_calendar_metric") not in (None, "¥", "%"):
+        st.session_state.pop("profit_calendar_metric", None)
+    c_view, c_metric = st.columns([2.2, 1])
+    with c_view:
+        view = st.segmented_control(
+            "收益日历周期",
+            ["日", "周", "月", "年"],
+            default=st.session_state.get("profit_calendar_view", "日"),
+            label_visibility="collapsed",
+            key="profit_calendar_view",
+            width="stretch",
+        )
+    with c_metric:
+        metric = st.segmented_control(
+            "收益日历口径",
+            ["¥", "%"],
+            default=st.session_state.get("profit_calendar_metric", "¥"),
+            label_visibility="collapsed",
+            key="profit_calendar_metric",
+            width="stretch",
+        )
     daily = build_daily_profit_calendar(history)
     if daily is None:
         daily = pd.DataFrame()
@@ -1165,45 +1201,104 @@ def render_profit_calendar(history, current_df=None):
     best = month_daily.dropna(subset=["total_amount"]).sort_values("total_amount", ascending=False).head(1)
     best_text = f"本月最好 {short_money_for_calendar(best.iloc[0]['total_amount'])}" if len(best) else "本月数据积累中"
 
-    data_map = {str(pd.to_datetime(r["date"]).date()): r for _, r in daily.iterrows()}
+    daily = daily.copy()
+    daily["date_dt"] = pd.to_datetime(daily["date"])
+    daily["date"] = daily["date_dt"].dt.date
+    data_map = {str(r["date"]): r for _, r in daily.iterrows()}
     selected = data_map.get(str(selected_date))
     today = china_today_date().date()
     cal = calendar.Calendar(firstweekday=6)
     rows = []
-    for week in cal.monthdatescalendar(year, month):
-        for d in week:
-            if d.month != month:
-                rows.append('<div class="profit-day blank"></div>')
-                continue
-            row = data_map.get(str(d))
-            is_selected = d == selected_date
-            if row is not None:
-                value = row.get("total_amount", float("nan"))
-                text = short_money_for_calendar(value)
-                tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
-                selected_extra = ""
-                if is_selected:
-                    selected_extra = "selected selected-pos" if pd.notna(value) and value > 0 else ("selected selected-neg" if pd.notna(value) and value < 0 else "selected selected-flat")
-                rows.append(
-                    f'<div class="profit-day {tone} {selected_extra}">'
-                    f'<div class="profit-day-num">{d.day}</div><div class="profit-day-value {cls(value)}">{esc(text)}</div></div>'
-                )
-            elif d == today:
-                rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">今</div><div class="profit-day-value">未更新</div></div>')
-            else:
-                rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">{d.day}</div><div class="profit-day-value">&nbsp;</div></div>')
+
+    def period_value(row_or_group, key="total"):
+        if isinstance(row_or_group, pd.DataFrame):
+            if metric == "¥":
+                return pd.to_numeric(row_or_group[f"{key}_amount"], errors="coerce").sum(min_count=1)
+            return calendar_period_pct(row_or_group, f"{key}_amount", f"{key}_base_mv")
+        return row_or_group.get(f"{key}_amount" if metric == "¥" else f"{key}_pct", float("nan"))
+
+    if view == "日":
+        for week in cal.monthdatescalendar(year, month):
+            for d in week:
+                if d.month != month:
+                    rows.append('<div class="profit-day blank"></div>')
+                    continue
+                row = data_map.get(str(d))
+                is_selected = d == selected_date
+                if row is not None:
+                    value = period_value(row, "total")
+                    text = calendar_metric_text(value, metric)
+                    tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
+                    selected_extra = ""
+                    if is_selected:
+                        selected_extra = "selected selected-pos" if pd.notna(value) and value > 0 else ("selected selected-neg" if pd.notna(value) and value < 0 else "selected selected-flat")
+                    rows.append(
+                        f'<div class="profit-day {tone} {selected_extra}">'
+                        f'<div class="profit-day-num">{d.day}</div><div class="profit-day-value {cls(value)}">{esc(text)}</div></div>'
+                    )
+                elif d == today:
+                    rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">今</div><div class="profit-day-value">未更新</div></div>')
+                else:
+                    rows.append(f'<div class="profit-day no-data"><div class="profit-day-num">{d.day}</div><div class="profit-day-value">&nbsp;</div></div>')
+    else:
+        period_cards = []
+        if view == "周":
+            month_dates = {d for week in cal.monthdatescalendar(year, month) for d in week if d.month == month}
+            month_daily_for_week = daily[daily["date"].isin(month_dates)].copy()
+            week_lookup = {}
+            for idx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                dates = [d for d in week if d.month == month]
+                if dates:
+                    for d in dates:
+                        week_lookup[d] = (idx, min(dates), max(dates))
+            if len(month_daily_for_week):
+                month_daily_for_week["_week"] = month_daily_for_week["date"].map(lambda d: week_lookup.get(d, (0, d, d))[0])
+                for week_no, group in month_daily_for_week.groupby("_week"):
+                    if not week_no:
+                        continue
+                    _, start_d, end_d = week_lookup[group["date"].iloc[0]]
+                    value = period_value(group, "total")
+                    period_cards.append((f"第{int(week_no)}周", f"{start_d.month}.{start_d.day}-{end_d.month}.{end_d.day}", value))
+        elif view == "月":
+            year_daily = daily[daily["date_dt"].dt.year == year].copy()
+            for period, group in year_daily.groupby(year_daily["date_dt"].dt.to_period("M")):
+                value = period_value(group, "total")
+                period_cards.append((f"{period.month}月", str(period), value))
+        else:
+            for period, group in daily.groupby(daily["date_dt"].dt.year):
+                value = period_value(group, "total")
+                period_cards.append((f"{int(period)}年", "", value))
+
+        for label, sublabel, value in period_cards:
+            tone = "pos-bg" if pd.notna(value) and value > 0 else ("neg-bg" if pd.notna(value) and value < 0 else "no-data")
+            rows.append(
+                f'<div class="profit-day {tone}"><div class="profit-day-num">{esc(label)}</div>'
+                f'<div class="profit-day-value {cls(value)}">{esc(calendar_metric_text(value, metric))}</div>'
+                f'<div class="profit-day-sub">{esc(sublabel)}</div></div>'
+            )
+        if not rows:
+            rows.append('<div class="muted">本区间暂无收益快照。</div>')
 
     detail_html = ""
-    if selected is not None:
+    if selected is not None and view == "日":
         label_map = [("银河", "galaxy"), ("东财", "eastmoney"), ("支付宝", "alipay"), ("合计", "total")]
         items = []
         for label, key in label_map:
-            value = selected.get(f"{key}_amount", float("nan"))
+            value = period_value(selected, key)
+            text = signed_money(value) if metric == "¥" else signed_pct(value)
             items.append(
                 f'<div class="profit-selected-item"><div class="profit-selected-label">{label}</div>'
-                f'<div class="profit-selected-value {cls(value)}">{esc(signed_money(value))}</div></div>'
+                f'<div class="profit-selected-value {cls(value)}">{esc(text)}</div></div>'
             )
         detail_html = '<div class="profit-selected-strip">' + "".join(items) + "</div>"
+
+    if view == "日":
+        body_html = (
+            '<div class="profit-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'
+            f'<div class="profit-calendar-grid">{"".join(rows)}</div>{detail_html}'
+        )
+    else:
+        body_html = f'<div class="profit-period-grid">{"".join(rows)}</div>'
 
     calendar_html = (
         '<div class="profit-calendar-card">'
@@ -1211,17 +1306,8 @@ def render_profit_calendar(history, current_df=None):
         '<div class="profit-calendar-title">收益日历</div>'
         f'<div class="profit-calendar-badge">{esc(best_text)}</div>'
         '</div>'
-        '<div class="profit-calendar-controls is-static">'
-        '<div class="profit-calendar-tabs"><span class="active">日</span><span>周</span><span>月</span><span>年</span></div>'
-        '<div class="profit-calendar-metric"><span class="active">¥</span><span>%</span></div>'
-        '</div>'
-        '<div class="profit-calendar-nav is-static">'
-        '<span>‹</span>'
-        f'<div class="profit-calendar-month">{year}年 {month}月</div>'
-        '<span>›</span>'
-        '</div>'
-        '<div class="profit-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>'
-        f'<div class="profit-calendar-grid">{"".join(rows)}</div>{detail_html}'
+        f'<div class="profit-calendar-month profit-calendar-month-only">{year}年 {month}月</div>'
+        f'{body_html}'
         '</div>'
     )
     st.markdown(calendar_html, unsafe_allow_html=True)
